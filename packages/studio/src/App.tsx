@@ -40,8 +40,6 @@ const NODE_DEFAULTS: Record<ChakraNodeType, ChakraConfig> = {
     publish: 'gate_notes',
     model: 'minimax/minimax-m3',
     temperature: 0.1,
-    pass_target: '',
-    revise_target: '',
   },
 };
 

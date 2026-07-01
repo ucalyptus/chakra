@@ -9,6 +9,38 @@ import type {
   GateConfig,
 } from './types';
 
+/**
+ * GOAL / GATE EXPANSION SEMANTICS
+ *
+ * Goal and Gate are STUDIO-ONLY abstractions. They exist only in the
+ * visual editor's node palette and config panels. The core schema
+ * (packages/core/src/schema/types.ts) has NO GoalNode or GateNode type —
+ * the Node union is Actor | Router | Tool | Join | LoopStart | LoopEnd.
+ *
+ * At export (serializer.ts), the Studio expands them into core primitives:
+ *
+ *   Goal (1 node) → Actor (1 node)
+ *     └─ The prompt_template is synthesized from GoalConfig fields
+ *        (statement, definition_of_done, verification_criteria) via
+ *        buildGoalPrompt(). Those fields are preserved as YAML comments
+ *        for round-trip fidelity.
+ *
+ *   Gate (1 node) → Actor (1 node, ${id}__judge) + Router (1 node, ${id}__router)
+ *     └─ The judge actor runs the gate prompt and emits a <decision>pass</decision>
+ *        or <decision>revise</decision> verdict. The router parses that tag and
+ *        branches to the appropriate target.
+ *     └─ All edges targeting the gate are redirected to ${id}__judge.
+ *        The original gate node's edges are suppressed; a data edge carries
+ *        the judge's output to the router.
+ *
+ * Round-trip metadata: every expanded node carries a YAML comment
+ *   # _chakra_node_type: original_chakra_type
+ * so that YAML files can be re-parsed back into their studio types.
+ * Goal fields (statement, definition_of_done, verification_criteria)
+ * are written as structured YAML comments immediately preceding the
+ * expanded actor node.
+ */
+
 function yamlQuote(value: string): string {
   return JSON.stringify(value);
 }
@@ -156,6 +188,13 @@ export function graphToYAML(nodes: Node<ChakraNodeData>[], edges: Edge[]): strin
       }
       case 'goal': {
         const cfg = d.config as GoalConfig;
+        lines.push('    # _chakra_node_type: goal');
+        lines.push(`    # Goal fields — statement, definition_of_done, verification_criteria`);
+        lines.push(`    #   statement: ${yamlQuote(cfg.statement)}`);
+        lines.push(`    #   definition_of_done: ${yamlQuote(cfg.definition_of_done)}`);
+        for (const criterion of cfg.verification_criteria) {
+          lines.push(`    #   verification_criteria: ${yamlQuote(criterion)}`);
+        }
         lines.push('    - type: actor');
         lines.push(`      id: ${id}`);
         lines.push(`      name: ${yamlQuote(cfg.name || id)}`);
@@ -175,6 +214,7 @@ export function graphToYAML(nodes: Node<ChakraNodeData>[], edges: Edge[]): strin
         const passTarget = requireGateTarget(id, 'pass', cfg.pass_target || inferredTargets[0] || '');
         const reviseTarget = requireGateTarget(id, 'revise', cfg.revise_target || inferredTargets[1] || '');
 
+        lines.push('    # _chakra_node_type: gate');
         lines.push('    - type: actor');
         lines.push(`      id: ${judgeId}`);
         lines.push(`      name: ${yamlQuote(cfg.name || `${id} judge`)}`);
