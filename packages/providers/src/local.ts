@@ -20,7 +20,7 @@ export class LocalProvider implements LLMProvider {
 
   public async complete(request: CompletionRequest): Promise<CompletionResponse> {
     const model = request.model || this.defaultModel;
-    const maxRetries = 2; // lower for local servers
+    const maxRetries = 3;
     let lastError: Error | undefined;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -39,6 +39,16 @@ export class LocalProvider implements LLMProvider {
     if (request.max_tokens !== undefined) {
       body.max_tokens = request.max_tokens;
     }
+    if (request.tools !== undefined) {
+      body.tools = request.tools.map((tool) => ({
+        type: 'function',
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters,
+        },
+      }));
+    }
 
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
@@ -50,11 +60,7 @@ export class LocalProvider implements LLMProvider {
     if (!response.ok) {
       const errorText = await response.text();
       const status = response.status;
-      if (status >= 500 || status === 429) {
-         
-        throw Object.assign(new Error(`Local LLM API error ${status}: ${errorText}`), { status });
-      }
-      throw new Error(`Local LLM API error ${status}: ${errorText}`);
+      throw Object.assign(new Error(`Local LLM API error ${status}: ${errorText}`), { status });
     }
 
     const data = (await response.json()) as {
@@ -80,7 +86,7 @@ export class LocalProvider implements LLMProvider {
         const status = (err as { status?: number }).status;
         if (status !== undefined && status < 500 && status !== 429) throw err;
         if (attempt < maxRetries - 1) {
-          await new Promise((resolve) => setTimeout(resolve, 500));
+          await new Promise((resolve) => setTimeout(resolve, Math.pow(2, attempt) * 1000));
         }
       } finally {
         clearTimeout(timeout);

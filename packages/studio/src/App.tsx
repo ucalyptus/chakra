@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useMemo, useRef } from 'react';
 import {
   ReactFlow, Background, Controls, MiniMap,
   addEdge, useNodesState, useEdgesState,
@@ -130,7 +130,10 @@ export default function App() {
     if (!message.trim() || running) return;
     setRunning(true); setResult(null);
     try {
-      const yaml = graphToYAML(nodes as Node<ChakraNodeData>[], edges);
+      const yaml = yamlPreview.yaml;
+      if (yamlPreview.error) {
+        throw new Error(yamlPreview.error);
+      }
       const res = await fetch(`${WORKER_URL}/chat`, {
         method: 'POST',
         headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/json' },
@@ -143,7 +146,13 @@ export default function App() {
     } finally { setRunning(false); }
   };
 
-  const yaml = graphToYAML(nodes as Node<ChakraNodeData>[], edges);
+  const yamlPreview = useMemo(() => {
+    try {
+      return { yaml: graphToYAML(nodes as Node<ChakraNodeData>[], edges), error: null as string | null };
+    } catch (error) {
+      return { yaml: '', error: String(error) };
+    }
+  }, [nodes, edges]);
 
   if (!auth) return (
     <div style={{ height: '100vh', background: '#0d0f12', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -242,7 +251,11 @@ export default function App() {
       {showYAML && (
         <div style={{ height: 240, background: '#161920', borderTop: '1px solid #2a2f3d', padding: 12, flexShrink: 0 }}>
           <div style={{ fontSize: 10, fontWeight: 700, color: '#8892a4', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>Generated YAML</div>
-          <pre style={{ fontSize: 11, color: '#a5f3fc', overflowY: 'auto', height: 190, margin: 0 }}>{yaml}</pre>
+          {yamlPreview.error ? (
+            <div style={{ fontSize: 11, color: '#ef4444', whiteSpace: 'pre-wrap' }}>{yamlPreview.error}</div>
+          ) : (
+            <pre style={{ fontSize: 11, color: '#a5f3fc', overflowY: 'auto', height: 190, margin: 0 }}>{yamlPreview.yaml}</pre>
+          )}
         </div>
       )}
     </div>

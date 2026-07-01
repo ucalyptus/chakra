@@ -13,6 +13,10 @@ function yamlQuote(value: string): string {
   return JSON.stringify(value);
 }
 
+function yamlInlineSequence(values: string[]): string {
+  return `[${values.map(yamlQuote).join(', ')}]`;
+}
+
 function buildGoalPrompt(cfg: GoalConfig): string {
   const criteria = cfg.verification_criteria.length > 0
     ? cfg.verification_criteria.map((criterion, index) => `${index + 1}. ${criterion}`).join('\n')
@@ -52,10 +56,21 @@ function buildGatePrompt(cfg: GateConfig): string {
   ].join('\n');
 }
 
-function getOutgoingTargets(nodeId: string, edges: Edge[]): string[] {
+function getOutgoingTargets(nodeId: string, nodes: Node<ChakraNodeData>[], edges: Edge[]): string[] {
   return edges
     .filter(edge => edge.source === nodeId)
-    .map(edge => edge.target);
+    .map((edge) => translateTargetId(edge.target, nodes.find(node => node.id === edge.target)?.data));
+}
+
+function translateTargetId(targetId: string, targetData?: ChakraNodeData): string {
+  return targetData?.chakraType === 'gate' ? `${targetId}__judge` : targetId;
+}
+
+function requireGateTarget(nodeId: string, branch: 'pass' | 'revise', target: string): string {
+  if (target.trim() === '') {
+    throw new Error(`Gate "${nodeId}" is missing its ${branch} target. Connect both branches or set explicit targets before export.`);
+  }
+  return target;
 }
 
 function writePromptBlock(lines: string[], prompt: string): void {
@@ -100,7 +115,7 @@ export function graphToYAML(nodes: Node<ChakraNodeData>[], edges: Edge[]): strin
 
   lines.push('  stores:');
   for (const ch of Array.from(channels)) {
-    lines.push(`    - id: ${ch}`);
+    lines.push(`    - id: ${yamlQuote(ch)}`);
     lines.push(`      name: ${yamlQuote(ch)}`);
     lines.push('      write_mode: append');
     if (ch === 'transcript') lines.push('      builtin: true');
@@ -132,8 +147,8 @@ export function graphToYAML(nodes: Node<ChakraNodeData>[], edges: Edge[]): strin
         lines.push('      actor_type: llm');
         if (cfg.model) lines.push(`      model: ${yamlQuote(cfg.model)}`);
         if (cfg.temperature != null) lines.push(`      temperature: ${cfg.temperature}`);
-        if (cfg.subscribe?.length) lines.push(`      subscribe: [${cfg.subscribe.join(', ')}]`);
-        if (cfg.publish) lines.push(`      publish: ${cfg.publish}`);
+        if (cfg.subscribe?.length) lines.push(`      subscribe: ${yamlInlineSequence(cfg.subscribe)}`);
+        if (cfg.publish) lines.push(`      publish: ${yamlQuote(cfg.publish)}`);
         if (cfg.prompt_template) {
           writePromptBlock(lines, cfg.prompt_template);
         }
@@ -147,8 +162,8 @@ export function graphToYAML(nodes: Node<ChakraNodeData>[], edges: Edge[]): strin
         lines.push('      actor_type: llm');
         if (cfg.model) lines.push(`      model: ${yamlQuote(cfg.model)}`);
         if (cfg.temperature != null) lines.push(`      temperature: ${cfg.temperature}`);
-        if (cfg.subscribe?.length) lines.push(`      subscribe: [${cfg.subscribe.join(', ')}]`);
-        if (cfg.publish) lines.push(`      publish: ${cfg.publish}`);
+        if (cfg.subscribe?.length) lines.push(`      subscribe: ${yamlInlineSequence(cfg.subscribe)}`);
+        if (cfg.publish) lines.push(`      publish: ${yamlQuote(cfg.publish)}`);
         writePromptBlock(lines, buildGoalPrompt(cfg));
         break;
       }
@@ -156,9 +171,9 @@ export function graphToYAML(nodes: Node<ChakraNodeData>[], edges: Edge[]): strin
         const cfg = d.config as GateConfig;
         const judgeId = `${id}__judge`;
         const routerId = `${id}__router`;
-        const inferredTargets = getOutgoingTargets(id, edges);
-        const passTarget = cfg.pass_target || inferredTargets[0] || '';
-        const reviseTarget = cfg.revise_target || inferredTargets[1] || '';
+        const inferredTargets = getOutgoingTargets(id, nodes, edges);
+        const passTarget = requireGateTarget(id, 'pass', cfg.pass_target || inferredTargets[0] || '');
+        const reviseTarget = requireGateTarget(id, 'revise', cfg.revise_target || inferredTargets[1] || '');
 
         lines.push('    - type: actor');
         lines.push(`      id: ${judgeId}`);
@@ -166,8 +181,8 @@ export function graphToYAML(nodes: Node<ChakraNodeData>[], edges: Edge[]): strin
         lines.push('      actor_type: llm');
         if (cfg.model) lines.push(`      model: ${yamlQuote(cfg.model)}`);
         if (cfg.temperature != null) lines.push(`      temperature: ${cfg.temperature}`);
-        if (cfg.subscribe?.length) lines.push(`      subscribe: [${cfg.subscribe.join(', ')}]`);
-        if (cfg.publish) lines.push(`      publish: ${cfg.publish}`);
+        if (cfg.subscribe?.length) lines.push(`      subscribe: ${yamlInlineSequence(cfg.subscribe)}`);
+        if (cfg.publish) lines.push(`      publish: ${yamlQuote(cfg.publish)}`);
         writePromptBlock(lines, buildGatePrompt(cfg));
 
         lines.push('    - type: router');
@@ -175,10 +190,10 @@ export function graphToYAML(nodes: Node<ChakraNodeData>[], edges: Edge[]): strin
         lines.push(`      name: ${yamlQuote(cfg.name ? `${cfg.name} Router` : `${id} router`)}`);
         lines.push('      mode: llm_driven');
         lines.push('      branches:');
-        lines.push('        - label: pass');
-        lines.push(`          target: ${passTarget}`);
-        lines.push('        - label: revise');
-        lines.push(`          target: ${reviseTarget}`);
+        lines.push(`        - label: ${yamlQuote('pass')}`);
+        lines.push(`          target: ${yamlQuote(passTarget)}`);
+        lines.push(`        - label: ${yamlQuote('revise')}`);
+        lines.push(`          target: ${yamlQuote(reviseTarget)}`);
         break;
       }
       case 'router': {
@@ -189,8 +204,8 @@ export function graphToYAML(nodes: Node<ChakraNodeData>[], edges: Edge[]): strin
         lines.push(`      mode: ${cfg.mode ?? 'llm_driven'}`);
         lines.push('      branches:');
         for (const branch of cfg.branches ?? []) {
-          lines.push(`        - label: ${branch.label}`);
-          lines.push(`          target: ${branch.target}`);
+          lines.push(`        - label: ${yamlQuote(branch.label)}`);
+          lines.push(`          target: ${yamlQuote(branch.target)}`);
         }
         break;
       }
@@ -219,9 +234,7 @@ export function graphToYAML(nodes: Node<ChakraNodeData>[], edges: Edge[]): strin
 
     const from = edge.source;
 
-    const to = targetNode?.data.chakraType === 'gate'
-      ? `${edge.target}__judge`
-      : edge.target;
+    const to = translateTargetId(edge.target, targetNode?.data);
 
     lines.push(`    - from: ${from}`);
     lines.push(`      to: ${to}`);

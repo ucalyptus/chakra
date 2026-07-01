@@ -4,6 +4,7 @@ export interface OpenRouterConfig {
   apiKey: string;
   baseUrl?: string;
   defaultModel?: string;
+  appUrl?: string;
 }
 
 interface OpenRouterResponse {
@@ -32,11 +33,13 @@ export class OpenRouterProvider implements LLMProvider {
   private apiKey: string;
   private baseUrl: string;
   private defaultModel: string;
+  private appUrl: string;
 
   constructor(config: OpenRouterConfig) {
     this.apiKey = config.apiKey;
     this.baseUrl = config.baseUrl ?? 'https://openrouter.ai/api/v1';
     this.defaultModel = config.defaultModel ?? 'minimax/minimax-01';
+    this.appUrl = config.appUrl ?? 'https://github.com/ucalyptus/chakra';
   }
 
   public async complete(request: CompletionRequest): Promise<CompletionResponse> {
@@ -55,7 +58,7 @@ export class OpenRouterProvider implements LLMProvider {
             headers: {
               Authorization: `Bearer ${this.apiKey}`,
               'Content-Type': 'application/json',
-              'HTTP-Referer': 'https://github.com/ucalyptus/chakra',
+              'HTTP-Referer': this.appUrl,
             },
             body: JSON.stringify({
               model,
@@ -74,7 +77,8 @@ export class OpenRouterProvider implements LLMProvider {
           });
           if (!response.ok) {
             const errorText = await response.text();
-            throw new Error(`OpenRouter API error ${response.status}: ${errorText}`);
+            const status = response.status;
+            throw Object.assign(new Error(`OpenRouter API error ${status}: ${errorText}`), { status });
           }
           const data = (await response.json()) as OpenRouterResponse;
           const choice = data.choices?.[0];
@@ -99,7 +103,7 @@ export class OpenRouterProvider implements LLMProvider {
               totalTokens: data.usage?.total_tokens ?? 0,
             },
             finishReason,
-            toolCalls,
+            toolCalls: toolCalls !== undefined && toolCalls.length > 0 ? toolCalls : undefined,
           };
         } finally {
           clearTimeout(timeout);

@@ -27,6 +27,7 @@ export interface RuntimeConfig {
   io: UserIOBridge;
   maxConcurrency?: number;
   onEvent?: (event: RuntimeEvent) => void;
+  initialMemory?: Record<string, string>;
 }
 
 export interface GraphResult {
@@ -68,6 +69,11 @@ export class Runner {
       builtin: ch.builtin,
     }));
     this.memory = new StoreManager(channelConfigs);
+    for (const [storeId, value] of Object.entries(config.initialMemory ?? {})) {
+      if (this.memory.getStore(storeId)) {
+        this.memory.write(storeId, value);
+      }
+    }
 
     // Wire event recording
     this.eventBus.on((event) => {
@@ -334,7 +340,14 @@ export class Runner {
       });
       return Promise.resolve(outputs);
     }
-    return Promise.resolve([input]);
+    const results: unknown[] = [input];
+    this.emitEvent({
+      type: 'await.satisfied',
+      awaitId: awaitAll.id,
+      outputs: results,
+      timestamp: Date.now(),
+    });
+    return Promise.resolve(results);
   }
 
   private async executeEffect(effect: Tool, input: unknown): Promise<unknown> {
@@ -356,7 +369,7 @@ export class Runner {
       }
 
       case 'emit_to_user': {
-        const message = stringifyUnknown(input);
+        const message = stringifyUnknown(input ?? getConfigValue(effect.config, 'message') ?? '');
         await this.io.emit(message);
         this.emitEvent({ type: 'user.output', message, timestamp: Date.now() });
         // Write to transcript
@@ -371,6 +384,14 @@ export class Runner {
         const data = stringifyUnknown(getConfigValue(effect.config, 'data') ?? input ?? '');
         if (storeId !== undefined && storeId !== '') {
           this.memory.write(storeId, data);
+          this.emitEvent({
+            type: 'store.write',
+            storeId,
+            mode: this.memory.getStore(storeId)?.writeMode ?? 'append',
+            round: this.round,
+            dataSizeBytes: data.length,
+            timestamp: Date.now(),
+          });
         }
         return data;
       }
@@ -391,7 +412,11 @@ export class Runner {
       }
 
       case 'log': {
-        // No-op for now, event is already emitted
+        this.emitEvent({
+          type: 'user.output',
+          message: `[LOG] ${stringifyUnknown(input)}`,
+          timestamp: Date.now(),
+        });
         return input;
       }
     }

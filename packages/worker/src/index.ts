@@ -90,7 +90,7 @@ program:
 
     - type: loop_end
       id: re_think
-      max_iterations: 2
+      max_iterations: 6
 
     - type: actor
       id: synthesizer

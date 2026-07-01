@@ -84,11 +84,7 @@ function stringifyUnknown(value: unknown): string {
     return String(value);
   }
 
-  if (value === null) {
-    return 'null';
-  }
-
-  if (value === undefined) {
+  if (value === null || value === undefined) {
     return '';
   }
 

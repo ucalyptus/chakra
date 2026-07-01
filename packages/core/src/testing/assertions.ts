@@ -1,6 +1,6 @@
 import type { TraceLog } from '../events/trace.js';
 import type { RuntimeEvent } from '../events/types.js';
-import type { TestResult } from './harness.js';
+import type { GraphResult } from '../runtime/runner.js';
 
 /**
  * Fluent assertion API for program trace events and outputs.
@@ -118,14 +118,14 @@ export class TraceAssertions {
   }
 }
 
-/** Create a trace assertion builder from a test result */
-export function assertTrace(result: TestResult): TraceAssertions {
-  return new TraceAssertions(result.trace);
+/** Create a trace assertion builder from a runner result */
+export function assertTrace(result: GraphResult): TraceAssertions {
+  return new TraceAssertions(result.trace, { halted: result.halted, rounds: result.rounds });
 }
 
 /** Assert on outputs emitted to the user */
-export function assertOutputs(result: TestResult): OutputAssertions {
-  return new OutputAssertions(result.outputs);
+export function assertOutputs(result: GraphResult, outputs: string[]): OutputAssertions {
+  return new OutputAssertions(outputs);
 }
 
 export class OutputAssertions {

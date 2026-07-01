@@ -68,6 +68,8 @@ Working ledger: {{channel:working_ledger}}`,
       effectType: 'emit_to_user',
       after: 'problem_solver',
     })
+    .edge('codex_worker', 'emit_response')
+    .edge('wait_for_user', 'emit_response')
     .roundEnd('re1', { after: 'emit_response' })
     .build();
 }

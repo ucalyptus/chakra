@@ -202,7 +202,7 @@ export function ConfigPanel({ node, onChange }: Props) {
             <select style={inputStyle} value={cfg.tool_type ?? 'emit_to_user'} onChange={e => onChange(id, { ...cfg, tool_type: e.target.value as ToolConfig['tool_type'] })}>
               <option value="wait_for_user">wait_for_user — receive input</option>
               <option value="emit_to_user">emit_to_user — send response</option>
-              <option value="memory_write">memory_write — write to channel</option>
+              <option value="store_write">store_write — write to channel</option>
               <option value="log">log — debug event</option>
             </select>
           </>

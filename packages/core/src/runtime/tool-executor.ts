@@ -67,7 +67,11 @@ export class EffectExecutor {
       }
 
       case 'log': {
-        // Event is already emitted through the event bus
+        ctx.eventBus.emit({
+          type: 'user.output',
+          message: `[LOG] ${stringifyUnknown(input)}`,
+          timestamp: Date.now(),
+        });
         return input;
       }
     }

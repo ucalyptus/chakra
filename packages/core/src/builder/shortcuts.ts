@@ -54,6 +54,11 @@ export function debate(
     after: opts.debaters[opts.debaters.length - 1].id,
   });
 
+  // Wire remaining debaters to the join (not just the last one)
+  for (let i = 0; i < opts.debaters.length - 1; i++) {
+    builder.edge(opts.debaters[i].id, 'debate_sync');
+  }
+
   builder.actor('judge', {
     type: 'llm',
     prompt: opts.judgePrompt,
