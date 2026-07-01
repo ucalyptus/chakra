@@ -187,6 +187,12 @@ export function looperTemplate(opts?: LooperTemplateOpts): Graph {
       definition_of_done: definitionOfDone,
       verification_criteria: verificationCriteria,
     })
+    // The gate publishes its verdict here, not back into the 'goal' store —
+    // 'goal' has write_mode: 'replace' and is seeded once at construction
+    // (StoreManager never re-applies initial_value), so publishing the
+    // verdict there would silently overwrite the original goal statement
+    // with the previous round's judgment on every revise.
+    .store('verdict', { mode: 'replace' })
     .roundStart('rs');
 
   // Parallel implementer agents — all start from loop_start
@@ -238,7 +244,7 @@ Synthesize their work into a single coherent output. Resolve any conflicts, merg
     statement: goalStatement,
     definition_of_done: definitionOfDone,
     verification_criteria: verificationCriteria,
-    publish: 'goal',
+    publish: 'verdict',
     model: verifierModel,
     temperature: 0.3,
     subscribe: ['goal'],

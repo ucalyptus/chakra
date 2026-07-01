@@ -460,5 +460,26 @@ describe('Roundtable Core', () => {
       const graphBuilt = compile(graph);
       expect(graphBuilt.program).toBeDefined();
     });
+
+    it('does not let the gate verdict overwrite the goal store across rounds', async () => {
+      const graph = looperTemplate({ implementerCount: 1, maxIterations: 2, goalStatement: 'Original goal text' });
+      const { program } = compile(graph);
+      const provider = new MockProvider([
+        { content: 'impl output round 1' },
+        { content: 'collated output round 1' },
+        { content: '<decision>revise</decision> needs more work' },
+        { content: 'impl output round 2' },
+        { content: 'collated output round 2' },
+        { content: '<decision>pass</decision> looks good' },
+      ]);
+
+      const result = await new Runner(program, {
+        provider,
+        io: { emit: async () => {}, waitForInput: async () => '' },
+      }).run();
+
+      expect(result.finalMemory.get('goal')).toContain('Original goal text');
+      expect(result.finalMemory.get('verdict')).toContain('pass');
+    });
   });
 });
