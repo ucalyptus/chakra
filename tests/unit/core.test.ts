@@ -378,6 +378,17 @@ describe('Roundtable Core', () => {
       expect(goalStore!.write_mode).toBe('replace');
     });
 
+    it('injects the goal context into each implementer exactly once', () => {
+      const graph = looperTemplate();
+      for (const id of ['implementer_0', 'implementer_1']) {
+        const impl = graph.nodes.find(n => n.id === id);
+        if (impl?.type === 'actor') {
+          const matches = impl.prompt_template.match(/\{\{channel:goal\}\}/g) ?? [];
+          expect(matches).toHaveLength(1);
+        }
+      }
+    });
+
     it('has join with await_count all awaiting all implementers', () => {
       const graph = looperTemplate();
       const join = graph.nodes.find(n => n.id === 'join');

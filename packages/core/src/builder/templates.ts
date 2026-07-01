@@ -196,8 +196,6 @@ export function looperTemplate(opts?: LooperTemplateOpts): Graph {
       subscribe: ['transcript'],
       prompt: `You are implementer ${i + 1} in a looper team. Your goal is to produce working output that satisfies the delivery goal.
 
-Goal context: {{channel:goal}}
-
 Produce the best implementation or solution you can. Use your tools to write code, create files, or perform research as needed.`,
       instances: 1,
       model: implementerModel,
