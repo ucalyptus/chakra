@@ -7,11 +7,12 @@ export class ActorExecutor {
     const model = actor.model ?? ctx.defaults.model ?? 'minimax/minimax-m1-m3';
     const temperature = actor.temperature ?? ctx.defaults.temperature;
 
-    // Build prompt by injecting subscribed channels
+    // Permissive regex for template injection — allows whitespace between braces
+    const CHANNEL_RX = /\{\{\s*channel\s*:\s*(\w+)(?::(\d+))?\s*\}\}/g;
     let prompt = actor.prompt_template;
     for (const storeId of actor.subscribe) {
       const content = ctx.memory.read(storeId);
-      prompt = prompt.replace(`{{channel:${storeId}}}`, content);
+      prompt = prompt.replace(CHANNEL_RX, (match, id) => id === storeId ? content : match);
     }
 
     // Append input context if present
@@ -20,49 +21,59 @@ export class ActorExecutor {
     }
 
     const executeOne = async (instanceIndex: number): Promise<string> => {
-      const startTime = Date.now();
-      ctx.eventBus.emit({
-        type: 'actor.start',
-        nodeId: actor.id,
-        instanceIndex,
-        prompt,
-        timestamp: startTime,
-      });
-
-      const response = await ctx.scheduler.enqueue(async () => {
-        return ctx.provider.complete({
-          model,
-          messages: [{ role: 'user', content: prompt }],
-          temperature,
-        });
-      });
-
-      const latencyMs = Date.now() - startTime;
-      ctx.eventBus.emit({
-        type: 'actor.complete',
-        nodeId: actor.id,
-        instanceIndex,
-        output: response.content,
-        latencyMs,
-        tokenUsage: response.usage,
-        timestamp: Date.now(),
-      });
-
-      // Publish to channel if configured
-      if (actor.publish !== undefined && actor.publish !== '') {
-        ctx.memory.write(actor.publish, response.content);
-        const channel = ctx.memory.getStore(actor.publish);
+      try {
+        const startTime = Date.now();
         ctx.eventBus.emit({
-          type: 'store.write',
-          storeId: actor.publish,
-          mode: channel?.writeMode ?? 'append',
-          round: ctx.round,
-          dataSizeBytes: response.content.length,
+          type: 'actor.start',
+          nodeId: actor.id,
+          instanceIndex,
+          prompt,
+          timestamp: startTime,
+        });
+
+        const response = await ctx.scheduler.enqueue(async () => {
+          return ctx.provider.complete({
+            model,
+            messages: [{ role: 'user', content: prompt }],
+            temperature,
+          });
+        });
+
+        const latencyMs = Date.now() - startTime;
+        ctx.eventBus.emit({
+          type: 'actor.complete',
+          nodeId: actor.id,
+          instanceIndex,
+          output: response.content,
+          latencyMs,
+          tokenUsage: response.usage,
           timestamp: Date.now(),
         });
-      }
 
-      return response.content;
+        // Publish to channel if configured
+        if (actor.publish !== undefined && actor.publish !== '') {
+          ctx.memory.write(actor.publish, response.content);
+          const channel = ctx.memory.getStore(actor.publish);
+          ctx.eventBus.emit({
+            type: 'store.write',
+            storeId: actor.publish,
+            mode: channel?.writeMode ?? 'append',
+            round: ctx.round,
+            dataSizeBytes: response.content.length,
+            timestamp: Date.now(),
+          });
+        }
+
+        return response.content;
+      } catch (err) {
+        ctx.eventBus.emit({
+          type: 'error',
+          nodeId: actor.id,
+          error: `Actor "${actor.id}"[${instanceIndex}] failed: ${err instanceof Error ? err.message : String(err)}`,
+          timestamp: Date.now(),
+        });
+        throw err;
+      }
     };
 
     if (instances === 1) {

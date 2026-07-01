@@ -1,6 +1,10 @@
 import type { CompiledTemplate, InjectionSlot } from './ir.js';
 
-const CHANNEL_PATTERN = /\{\{channel:(\w+)(?::(\d+))?\}\}/g;
+// Permissive pattern — allows whitespace between braces and around the colon.
+// Must match the validate.ts permissive regex character-for-character to avoid
+// silent injection failures where a template passes validation but the compiler
+// returns zero injection slots.
+const CHANNEL_PATTERN = /\{\{\s*channel\s*:\s*(\w+)(?::(\d+))?\s*\}\}/g;
 
 /**
  * Parse a prompt template string into static fragments and injection slots.

@@ -125,7 +125,18 @@ export class Runner {
 
     this.emitEvent({ type: 'node.activated', nodeId, round: this.round, input, timestamp: Date.now() });
 
-    const result = await this.executeNode(compiledNode, input);
+    let result: unknown;
+    try {
+      result = await this.executeNode(compiledNode, input);
+    } catch (err) {
+      this.emitEvent({
+        type: 'error',
+        nodeId,
+        error: `Node "${nodeId}" failed: ${err instanceof Error ? err.message : String(err)}`,
+        timestamp: Date.now(),
+      });
+      throw err;
+    }
 
     // Router and loop_end handle their own routing — don't follow edges
     if (compiledNode.type === 'router' || compiledNode.type === 'loop_end') {
@@ -173,11 +184,13 @@ export class Runner {
     const model = actor.model ?? this.program.defaults.model ?? 'minimax/minimax-m1-m3';
     const temperature = actor.temperature ?? this.program.defaults.temperature;
 
-    // Build prompt by injecting subscribed channels
+    // Permissive regex for template injection — allows {{ channel : storeId }} 
+    // whitespace variants that the permissive validator accepts.
+    const CHANNEL_RX = /\{\{\s*channel\s*:\s*(\w+)(?::(\d+))?\s*\}\}/g;
     let prompt = actor.prompt_template;
     for (const storeId of actor.subscribe) {
       const content = this.memory.read(storeId);
-      prompt = prompt.replace(`{{channel:${storeId}}}`, content);
+      prompt = prompt.replace(CHANNEL_RX, (match, id) => id === storeId ? content : match);
     }
 
     // Add input context if present
@@ -186,40 +199,50 @@ export class Runner {
     }
 
     const executeOne = async (instanceIndex: number): Promise<string> => {
-      const startTime = Date.now();
-      this.emitEvent({ type: 'actor.start', nodeId: actor.id, instanceIndex, prompt, timestamp: startTime });
+      try {
+        const startTime = Date.now();
+        this.emitEvent({ type: 'actor.start', nodeId: actor.id, instanceIndex, prompt, timestamp: startTime });
 
-      const response = await this.provider.complete({
-        model,
-        messages: [{ role: 'user', content: prompt }],
-        temperature,
-      });
+        const response = await this.provider.complete({
+          model,
+          messages: [{ role: 'user', content: prompt }],
+          temperature,
+        });
 
-      const latencyMs = Date.now() - startTime;
-      this.emitEvent({
-        type: 'actor.complete',
-        nodeId: actor.id,
-        instanceIndex,
-        output: response.content,
-        latencyMs,
-        tokenUsage: response.usage,
-        timestamp: Date.now(),
-      });
-
-      // Publish to channel if configured
-      if (actor.publish !== undefined && actor.publish !== '') {
-        this.memory.write(actor.publish, response.content);
+        const latencyMs = Date.now() - startTime;
         this.emitEvent({
-          type: 'store.write',
-          storeId: actor.publish,
-          mode: this.program.stores.get(actor.publish)?.writeMode ?? 'append',
-          round: this.round,
-          dataSizeBytes: response.content.length,
+          type: 'actor.complete',
+          nodeId: actor.id,
+          instanceIndex,
+          output: response.content,
+          latencyMs,
+          tokenUsage: response.usage,
           timestamp: Date.now(),
         });
-      }
 
-      return response.content;
+        // Publish to channel if configured
+        if (actor.publish !== undefined && actor.publish !== '') {
+          this.memory.write(actor.publish, response.content);
+          this.emitEvent({
+            type: 'store.write',
+            storeId: actor.publish,
+            mode: this.program.stores.get(actor.publish)?.writeMode ?? 'append',
+            round: this.round,
+            dataSizeBytes: response.content.length,
+            timestamp: Date.now(),
+          });
+        }
+
+        return response.content;
+      } catch (err) {
+        this.emitEvent({
+          type: 'error',
+          nodeId: actor.id,
+          error: `Actor "${actor.id}"[${instanceIndex}] failed: ${err instanceof Error ? err.message : String(err)}`,
+          timestamp: Date.now(),
+        });
+        throw err;
+      }
     };
 
     if (instances === 1) {
