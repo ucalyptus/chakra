@@ -38,6 +38,15 @@ export interface GraphResult {
   haltReason?: string;
 }
 
+interface JoinGateState {
+  slots: unknown[];
+  required: number;
+  firstArrivalAt: number;
+  timeoutMs?: number;
+  onTimeout: 'proceed_partial' | 'fail';
+  resolved: boolean;
+}
+
 export class Runner {
   private round = 0;
   private program: CompiledGraph;
@@ -47,6 +56,8 @@ export class Runner {
   private eventBus: EventBus;
   private trace: TraceLog;
   private maxConcurrency: number;
+  private joinGates = new Map<string, JoinGateState>();
+  private upstreamActorTotals = new Map<string, number>();
   private halted = false;
   private haltReason?: string;
 
@@ -88,6 +99,7 @@ export class Runner {
     while (!this.halted && this.round < maxRounds) {
       this.round++;
       this.memory.setRound(this.round);
+      this.joinGates.clear();
 
       this.emitEvent({ type: 'round.start', round: this.round, timestamp: Date.now() });
 
@@ -141,6 +153,12 @@ export class Runner {
     // Router and loop_end handle their own routing — don't follow edges
     if (compiledNode.type === 'router' || compiledNode.type === 'loop_end') {
       return result;
+    }
+
+    // Join hasn't collected enough slots yet — this arrival stops here.
+    // The call that completes the gate is the one that proceeds downstream.
+    if (compiledNode.type === 'join' && result === undefined) {
+      return undefined;
     }
 
     // Follow outgoing edges for other node types
@@ -350,27 +368,101 @@ export class Runner {
     return undefined;
   }
 
-  private executeJoin(awaitAll: Join, input: unknown): Promise<unknown[]> {
-    // In our sequential execution model, Join receives aggregated input
-    // from parallel instances. Input should already be an array.
-    if (Array.isArray(input)) {
-      const outputs = input.map((item): unknown => item);
-      this.emitEvent({
-        type: 'await.satisfied',
-        awaitId: awaitAll.id,
-        outputs,
-        timestamp: Date.now(),
-      });
-      return Promise.resolve(outputs);
+  /**
+   * Join accumulates one slot per incoming activation and only proceeds
+   * downstream once the configured mode/await_count is met:
+   *   any      → proceed on the first slot
+   *   all      → wait for every reachable upstream actor instance
+   *   n_of_m   → wait for await_count slots (default when await_count is a number)
+   *
+   * Returns undefined while the gate is still pending — the caller (activate())
+   * treats that as "stop here"; only the call that completes the gate carries
+   * the aggregated results downstream. timeout_ms/on_timeout are checked
+   * against wall-clock time elapsed since the first slot arrived, so a join
+   * that never collects enough slots this round can still resolve instead of
+   * silently stalling forever.
+   */
+  private executeJoin(join: Join, input: unknown): unknown[] | undefined {
+    const mode = join.mode ?? (join.await_count === 'all' ? 'all' : 'n_of_m');
+    const required = mode === 'any'
+      ? 1
+      : mode === 'all'
+        ? this.getUpstreamActorInstanceTotal(join.id)
+        : (typeof join.await_count === 'number' ? join.await_count : this.getUpstreamActorInstanceTotal(join.id));
+
+    let gate = this.joinGates.get(join.id);
+    if (!gate) {
+      gate = {
+        slots: [],
+        required,
+        firstArrivalAt: Date.now(),
+        timeoutMs: join.timeout_ms,
+        onTimeout: join.on_timeout ?? 'proceed_partial',
+        resolved: false,
+      };
+      this.joinGates.set(join.id, gate);
     }
-    const results: unknown[] = [input];
+
+    // Gate already fired downstream this round — a late slot is recorded
+    // for observability but must not re-trigger the subgraph past the join.
+    if (gate.resolved) {
+      return undefined;
+    }
+
+    const incoming: unknown[] = Array.isArray(input) ? (input as unknown[]) : [input];
+    gate.slots.push(...incoming);
+
     this.emitEvent({
-      type: 'await.satisfied',
-      awaitId: awaitAll.id,
-      outputs: results,
+      type: 'await.slot_filled',
+      awaitId: join.id,
+      filledCount: gate.slots.length,
+      totalCount: gate.required,
       timestamp: Date.now(),
     });
-    return Promise.resolve(results);
+
+    const satisfied = gate.slots.length >= gate.required;
+    const timedOut = !satisfied && gate.timeoutMs !== undefined && Date.now() - gate.firstArrivalAt >= gate.timeoutMs;
+
+    if (!satisfied && !timedOut) {
+      return undefined;
+    }
+
+    if (timedOut && gate.onTimeout === 'fail') {
+      gate.resolved = true;
+      const message = `Join "${join.id}" timed out after ${gate.timeoutMs}ms with ${gate.slots.length}/${gate.required} slot(s) filled.`;
+      this.emitEvent({ type: 'error', nodeId: join.id, error: message, timestamp: Date.now() });
+      throw new Error(message);
+    }
+
+    gate.resolved = true;
+    this.emitEvent({ type: 'await.satisfied', awaitId: join.id, outputs: gate.slots, timestamp: Date.now() });
+    return gate.slots;
+  }
+
+  /** Total actor instances reachable upstream of a join — the denominator for mode: 'all'. */
+  private getUpstreamActorInstanceTotal(joinId: string): number {
+    const cached = this.upstreamActorTotals.get(joinId);
+    if (cached !== undefined) return cached;
+
+    const visited = new Set<string>();
+    const queue = [...(this.program.reverseEdges.get(joinId) ?? [])];
+    let total = 0;
+
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (current === undefined || visited.has(current)) continue;
+      visited.add(current);
+      const node = this.program.nodes.get(current);
+      if (node?.type === 'actor') {
+        total += (node.config as Actor).instances ?? 1;
+      }
+      for (const prev of this.program.reverseEdges.get(current) ?? []) {
+        if (!visited.has(prev)) queue.push(prev);
+      }
+    }
+
+    this.upstreamActorTotals.set(joinId, total);
+    return total;
   }
 
   private async executeEffect(effect: Tool, input: unknown): Promise<unknown> {

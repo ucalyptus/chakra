@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Edge, Node } from '@xyflow/react';
-import { GraphBuilder, Runner, assertTrace, compile } from '@chakra-dsl/core';
+import { GraphBuilder, Runner, assertTrace, compile, buildGraph } from '@chakra-dsl/core';
 import { LocalProvider, MockProvider, OpenRouterProvider } from '@chakra-dsl/providers';
 import { graphToYAML } from '../../packages/studio/src/serializer';
 import type { ChakraNodeData } from '../../packages/studio/src/types';
@@ -236,5 +236,90 @@ describe('commentary regressions', () => {
 
     const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? '{}')) as { tools?: Array<{ function?: { name?: string } }> };
     expect(requestBody.tools?.[0]?.function?.name).toBe('lookup');
+  });
+
+  it('join waits for await_count slots before releasing aggregated outputs downstream', async () => {
+    const program = new GraphBuilder('join-n-of-m')
+      .defaults({ model: 'mock', maxIterations: 1 })
+      .roundStart('rs')
+      .actor('a', { type: 'llm', prompt: 'A', after: 'rs' })
+      .actor('b', { type: 'llm', prompt: 'B', after: 'rs' })
+      .awaitAll('j', { count: 2, after: 'a' })
+      .edge('b', 'j')
+      .actor('judge', { type: 'llm', prompt: 'Judge', after: 'j' })
+      .roundEnd('re', { after: 'judge', maxIterations: 1 })
+      .build();
+
+    const provider = new MockProvider([{ content: 'out-a' }, { content: 'out-b' }, { content: 'out-judge' }]);
+    const { program: compiled } = compile(program);
+    const result = await new Runner(compiled, {
+      provider,
+      io: { emit: async () => {}, waitForInput: async () => '' },
+    }).run();
+
+    assertTrace(result)
+      .hasEvent('await.slot_filled', { awaitId: 'j', filledCount: 1, totalCount: 2 })
+      .hasEvent('await.slot_filled', { awaitId: 'j', filledCount: 2, totalCount: 2 })
+      .hasEvent('await.satisfied', { awaitId: 'j' })
+      .actorCompleted('judge');
+
+    expect(provider.getCallCount()).toBe(3);
+    const satisfied = assertTrace(result).getEvents().find(e => e.type === 'await.satisfied');
+    expect(satisfied?.type === 'await.satisfied' && satisfied.outputs).toEqual(['out-a', 'out-b']);
+    expect(provider.getCalls()[2]?.messages[0]?.content).toContain('out-a');
+    expect(provider.getCalls()[2]?.messages[0]?.content).toContain('out-b');
+  });
+
+  it('join with mode "any" proceeds on the first slot and ignores later arrivals', async () => {
+    const program = new GraphBuilder('join-any')
+      .defaults({ model: 'mock', maxIterations: 1 })
+      .roundStart('rs')
+      .actor('a', { type: 'llm', prompt: 'A', after: 'rs' })
+      .actor('b', { type: 'llm', prompt: 'B', after: 'rs' })
+      .awaitAll('j', { count: 2, mode: 'any', after: 'a' })
+      .edge('b', 'j')
+      .actor('judge', { type: 'llm', prompt: 'Judge', after: 'j' })
+      .roundEnd('re', { after: 'judge', maxIterations: 1 })
+      .build();
+
+    const provider = new MockProvider([{ content: 'out-a' }, { content: 'out-b' }, { content: 'out-judge' }]);
+    const { program: compiled } = compile(program);
+    const result = await new Runner(compiled, {
+      provider,
+      io: { emit: async () => {}, waitForInput: async () => '' },
+    }).run();
+
+    const events = assertTrace(result).hasEvent('await.satisfied', { awaitId: 'j' }).getEvents();
+    expect(events.filter(e => e.type === 'await.satisfied')).toHaveLength(1);
+    expect(events.filter(e => e.type === 'await.slot_filled')).toHaveLength(1);
+    expect(events.filter(e => e.type === 'actor.complete' && e.nodeId === 'judge')).toHaveLength(1);
+    // Both branches still run — the join only short-circuits what happens after it.
+    expect(provider.getCallCount()).toBe(3);
+  });
+
+  it('fails a join that times out without enough slots when on_timeout is "fail"', async () => {
+    const program = new GraphBuilder('join-timeout')
+      .defaults({ model: 'mock', maxIterations: 1 })
+      .roundStart('rs')
+      .actor('a', { type: 'llm', prompt: 'A', after: 'rs' })
+      .awaitAll('j', { count: 2, timeout_ms: 0, after: 'a' })
+      .actor('judge', { type: 'llm', prompt: 'Judge', after: 'j' })
+      .roundEnd('re', { after: 'judge', maxIterations: 1 })
+      .build();
+    const joinNode = program.nodes.find(n => n.type === 'join');
+    if (joinNode?.type === 'join') joinNode.on_timeout = 'fail';
+
+    // Deliberately under-provisioned (await_count 2 with only 1 reachable actor) to
+    // exercise the timeout path — compile() would reject this via AWAIT_REACHABLE,
+    // so build the IR directly rather than going through the normal validated path.
+    const provider = new MockProvider([{ content: 'out-a' }]);
+    const compiled = buildGraph(program);
+
+    await expect(
+      new Runner(compiled, {
+        provider,
+        io: { emit: async () => {}, waitForInput: async () => '' },
+      }).run(),
+    ).rejects.toThrow(/timed out/);
   });
 });
