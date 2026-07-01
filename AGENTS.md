@@ -73,7 +73,7 @@ import { StdioUserIO } from '@chakra-dsl/node';
 
 const program = new GraphBuilder('my-agent')
   .defaults({ model: 'claude-sonnet-4-6' })
-  .channel('notes', { mode: 'append' })
+  .store('notes', { mode: 'append' })
   .roundStart('rs')
   .actor('thinker', { type: 'llm', subscribe: ['transcript', 'notes'], prompt: '...' })
   .effect('emit', { effectType: 'emit_to_user' })
@@ -158,15 +158,13 @@ Store in `.env` at repo root (git-ignored).
 packages/
 ├── core/         # Schema, compiler, runtime, memory, events, builder (platform-agnostic)
 │   └── src/
-│       ├── schema/        # Types, Zod validation
-│       ├── compiler/      # IR, static analyzer, prompt compiler
-│       ├── runtime/       # Runner, executors (node, actor, router, await, effect, scheduler)
-│       ├── memory/        # Channel memory, transcript
+│       ├── schema/        # Types, hand-written validation (validateGraph)
+│       ├── compiler/      # IR, graph builder, prompt compiler
+│       ├── runtime/       # Runner (single execution engine — no separate executor classes)
+│       ├── memory/        # Store memory, transcript
 │       ├── events/        # Event bus, typed events, logger, replay
 │       ├── builder/       # Fluent GraphBuilder, shortcuts, templates
-│       ├── advanced/      # Conditional wiring, nested programs, streaming, checkpointing, cost control, adaptive instances
-│       ├── visualization/ # Mermaid/DOT graph renderer, terminal execution view, memory inspector
-│       └── testing/       # Test harness (mock I/O), fluent assertions, fixture programs
+│       └── testing/       # Fluent trace/output assertions (assertTrace, assertOutputs)
 ├── providers/    # LLM provider adapters (OpenRouter, Anthropic, OpenAI, Local, Mock)
 ├── node/         # Node.js I/O bridges (stdio, WebSocket, callback) + tools
 └── cli/          # CLI commands (run, validate, inspect, init)
