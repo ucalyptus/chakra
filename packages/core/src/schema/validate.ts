@@ -1,5 +1,5 @@
 import type { Graph } from './graph.js';
-import type { Edge, Node, LoopStart } from './types.js';
+import type { Edge, Node, LoopStart, Store } from './types.js';
 
 export interface ValidationError {
   severity: 'error' | 'warning';
@@ -32,6 +32,7 @@ export function validateGraph(program: Graph): ValidationError[] {
   validateStores(program.nodes, storeIds, errors);
   validateTemplates(program.nodes, storeIds, errors);
   validateActorTools(program.nodes, toolIds, errors);
+  validateStoreSchema(program.stores, errors);
   validateRouterFallbacks(program.nodes, errors);
   validateAwaitReachable(program.nodes, nodeMap, reverseAdjacency, errors);
   validateOrphanNodes(program.nodes, adjacency, errors);
@@ -147,6 +148,19 @@ function validateActorTools(nodes: Node[], toolIds: Set<string>, errors: Validat
         rule: 'TOOLS_EXIST',
         message: `Actor "${node.id}" references undeclared tool "${toolId}".`,
         nodeId: node.id,
+      });
+    }
+  }
+}
+
+function validateStoreSchema(stores: Store[], errors: ValidationError[]): void {
+  for (const store of stores) {
+    if (store.schema !== undefined && store.format !== 'structured') {
+      errors.push({
+        severity: 'error',
+        rule: 'STORE_SCHEMA_REQUIRES_STRUCTURED',
+        message: `Store "${store.id}" declares a schema but format is not "structured"; the schema would never be enforced.`,
+        nodeId: store.id,
       });
     }
   }

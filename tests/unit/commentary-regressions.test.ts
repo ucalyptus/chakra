@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Edge, Node } from '@xyflow/react';
-import { GraphBuilder, Runner, assertTrace, compile, buildGraph } from '@chakra-dsl/core';
+import { GraphBuilder, Runner, assertTrace, compile, buildGraph, StoreManager } from '@chakra-dsl/core';
+import type { LLMProvider } from '@chakra-dsl/core';
 import { LocalProvider, MockProvider, OpenRouterProvider } from '@chakra-dsl/providers';
 import { graphToYAML } from '../../packages/studio/src/serializer';
 import type { ChakraNodeData } from '../../packages/studio/src/types';
@@ -356,5 +357,104 @@ describe('commentary regressions', () => {
       .build();
 
     expect(() => compile(program)).toThrow(/TOOLS_EXIST/);
+  });
+
+  it('actor_type "agent" loops on tool calls until the model stops requesting them', async () => {
+    const program = new GraphBuilder('agent-loop')
+      .defaults({ model: 'mock', maxIterations: 1 })
+      .channel('scratch', { mode: 'append' })
+      .roundStart('rs')
+      .effect('lookup', { effectType: 'store_write', config: { channel: 'scratch' }, after: '' })
+      .actor('main', { type: 'agent', prompt: 'Go', tools: ['lookup'], after: 'rs' })
+      .roundEnd('re', { after: 'main', maxIterations: 1 })
+      .build();
+
+    let calls = 0;
+    const provider: LLMProvider = {
+      complete: async (request) => {
+        calls++;
+        if (calls === 1) {
+          return {
+            content: 'calling tool',
+            model: request.model,
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            finishReason: 'tool_calls',
+            toolCalls: [{ id: 't1', name: 'lookup', arguments: JSON.stringify('hello') }],
+          };
+        }
+        return {
+          content: 'done',
+          model: request.model,
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          finishReason: 'stop',
+        };
+      },
+    };
+
+    const { program: compiled } = compile(program);
+    const result = await new Runner(compiled, {
+      provider,
+      io: { emit: async () => {}, waitForInput: async () => '' },
+    }).run();
+
+    expect(calls).toBe(2);
+    expect(result.finalMemory.get('scratch')).toBe('hello');
+    const complete = assertTrace(result).getEvents().find(e => e.type === 'actor.complete');
+    expect(complete?.type === 'actor.complete' && complete.output).toBe('done');
+  });
+
+  it('actor_type "llm" still executes a requested tool call but does not loop back to the model', async () => {
+    const program = new GraphBuilder('llm-single-shot-tool')
+      .defaults({ model: 'mock', maxIterations: 1 })
+      .channel('scratch', { mode: 'append' })
+      .roundStart('rs')
+      .effect('lookup', { effectType: 'store_write', config: { channel: 'scratch' }, after: '' })
+      .actor('main', { type: 'llm', prompt: 'Go', tools: ['lookup'], after: 'rs' })
+      .roundEnd('re', { after: 'main', maxIterations: 1 })
+      .build();
+
+    let calls = 0;
+    const provider: LLMProvider = {
+      complete: async (request) => {
+        calls++;
+        return {
+          content: 'calling tool',
+          model: request.model,
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          finishReason: 'tool_calls',
+          toolCalls: [{ id: 't1', name: 'lookup', arguments: JSON.stringify('hello') }],
+        };
+      },
+    };
+
+    const { program: compiled } = compile(program);
+    const result = await new Runner(compiled, {
+      provider,
+      io: { emit: async () => {}, waitForInput: async () => '' },
+    }).run();
+
+    expect(calls).toBe(1);
+    expect(result.finalMemory.get('scratch')).toBe('hello');
+  });
+
+  it('rejects a store schema declared without format: "structured"', () => {
+    const program = new GraphBuilder('bad-store-schema')
+      .defaults({ model: 'mock', maxIterations: 1 })
+      .roundStart('rs')
+      .roundEnd('re', { maxIterations: 1 })
+      .build();
+    program.stores.push({ id: 'notes', name: 'notes', write_mode: 'append', schema: { required: ['x'] } });
+
+    expect(() => compile(program)).toThrow(/STORE_SCHEMA_REQUIRES_STRUCTURED/);
+  });
+
+  it('enforces format: "structured" writes are valid JSON with required fields', () => {
+    const memory = new StoreManager([
+      { id: 'notes', name: 'notes', write_mode: 'append', format: 'structured', schema: { required: ['status'] } },
+    ]);
+
+    expect(() => memory.write('notes', 'not json')).toThrow(/non-JSON/);
+    expect(() => memory.write('notes', JSON.stringify({ other: 1 }))).toThrow(/missing required field/);
+    expect(() => memory.write('notes', JSON.stringify({ status: 'ok' }))).not.toThrow();
   });
 });

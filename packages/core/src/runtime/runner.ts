@@ -4,7 +4,7 @@ import { EventBus } from '../events/bus.js';
 import { TraceLog } from '../events/trace.js';
 import type { RuntimeEvent } from '../events/types.js';
 import type { Actor, Router, Join, Tool, ToolType, LoopEnd } from '../schema/types.js';
-import type { LLMProvider, ToolDefinition } from './provider.js';
+import type { LLMProvider, Message, ToolDefinition } from './provider.js';
 
 export type { Message, ToolDefinition, CompletionRequest, CompletionResponse, LLMProvider } from './provider.js';
 
@@ -207,19 +207,46 @@ export class Runner {
       prompt += `\n\nInput from previous step:\n${stringifyUnknown(input)}`;
     }
 
-    const tools = this.resolveToolDefinitions(actor.tools);
+    const { definitions: tools, byName: toolsByName } = this.resolveToolDefinitions(actor.tools);
 
     const executeOne = async (instanceIndex: number): Promise<string> => {
       try {
         const startTime = Date.now();
         this.emitEvent({ type: 'actor.start', nodeId: actor.id, instanceIndex, prompt, timestamp: startTime });
 
-        const response = await this.provider.complete({
+        const messages: Message[] = [{ role: 'user', content: prompt }];
+        let response = await this.provider.complete({
           model,
-          messages: [{ role: 'user', content: prompt }],
+          messages,
           temperature,
           tools: tools.length > 0 ? tools : undefined,
         });
+        const totalUsage = { ...response.usage };
+
+        // actor_type 'agent' loops: execute requested tool calls, feed their
+        // results back, and keep going until the model stops calling tools
+        // or the round budget runs out. actor_type 'llm' is single-shot — a
+        // tool call it makes still runs (see below), but there's no second
+        // turn to report back to.
+        if (actor.actor_type === 'agent') {
+          let iterations = 0;
+          while (response.finishReason === 'tool_calls' && (response.toolCalls?.length ?? 0) > 0 && iterations < MAX_AGENT_TOOL_ITERATIONS) {
+            iterations++;
+            messages.push({ role: 'assistant', content: response.content });
+            for (const call of response.toolCalls ?? []) {
+              const output = await this.runToolCall(call, toolsByName);
+              messages.push({ role: 'user', content: `Tool "${call.name}" result: ${output}` });
+            }
+            response = await this.provider.complete({ model, messages, temperature, tools });
+            totalUsage.inputTokens += response.usage.inputTokens;
+            totalUsage.outputTokens += response.usage.outputTokens;
+            totalUsage.totalTokens += response.usage.totalTokens;
+          }
+        } else if (response.finishReason === 'tool_calls') {
+          for (const call of response.toolCalls ?? []) {
+            await this.runToolCall(call, toolsByName);
+          }
+        }
 
         const latencyMs = Date.now() - startTime;
         this.emitEvent({
@@ -228,7 +255,7 @@ export class Runner {
           instanceIndex,
           output: response.content,
           latencyMs,
-          tokenUsage: response.usage,
+          tokenUsage: totalUsage,
           model: response.model,
           finishReason: response.finishReason,
           toolCalls: response.toolCalls,
@@ -470,10 +497,11 @@ export class Runner {
    * for the same reason; this is defense in depth for graphs built without it,
    * e.g. via buildGraph() directly).
    */
-  private resolveToolDefinitions(toolIds: string[] | undefined): ToolDefinition[] {
-    if (toolIds === undefined || toolIds.length === 0) return [];
-
+  private resolveToolDefinitions(toolIds: string[] | undefined): { definitions: ToolDefinition[]; byName: Map<string, Tool> } {
     const definitions: ToolDefinition[] = [];
+    const byName = new Map<string, Tool>();
+    if (toolIds === undefined || toolIds.length === 0) return { definitions, byName };
+
     for (const toolId of toolIds) {
       const node = this.program.nodes.get(toolId);
       if (node?.type !== 'tool') {
@@ -491,8 +519,31 @@ export class Runner {
         description: TOOL_TYPE_DESCRIPTIONS[tool.tool_type],
         parameters: TOOL_TYPE_PARAMETERS[tool.tool_type],
       });
+      byName.set(tool.name, tool);
     }
-    return definitions;
+    return { definitions, byName };
+  }
+
+  /** Executes a tool call the LLM requested by dispatching to the matching Tool node's effect. */
+  private async runToolCall(call: { id: string; name: string; arguments: string }, toolsByName: Map<string, Tool>): Promise<string> {
+    const tool = toolsByName.get(call.name);
+    if (!tool) {
+      return `Error: tool "${call.name}" is not available to this actor.`;
+    }
+
+    let args: unknown;
+    try {
+      args = JSON.parse(call.arguments) as unknown;
+    } catch {
+      args = call.arguments;
+    }
+
+    try {
+      const result = await this.executeEffect(tool, args);
+      return stringifyUnknown(result);
+    } catch (err) {
+      return `Error executing tool "${call.name}": ${err instanceof Error ? err.message : String(err)}`;
+    }
   }
 
   private async executeEffect(effect: Tool, input: unknown): Promise<unknown> {
@@ -619,6 +670,9 @@ function stringifyUnknown(value: unknown): string {
 function assertNever(_value: never): never {
   throw new Error('Unhandled node type');
 }
+
+/** Bounds actor_type: 'agent' tool-call loops so a misbehaving model can't spin forever. */
+const MAX_AGENT_TOOL_ITERATIONS = 4;
 
 const TOOL_TYPE_DESCRIPTIONS: Record<ToolType, string> = {
   wait_for_user: 'Wait for the next message from the user.',
