@@ -1,5 +1,6 @@
-export type { RuntimeConfig, GraphResult, LLMProvider, UserIOBridge } from './runner.js';
+export type { RuntimeConfig, GraphResult, UserIOBridge } from './runner.js';
 export { Runner } from './runner.js';
+export type { Message, ToolDefinition, CompletionRequest, CompletionResponse, LLMProvider } from './provider.js';
 export { NodeExecutor } from './node-executor.js';
 export type { ExecutorContext } from './node-executor.js';
 export { ActorExecutor } from './actor-executor.js';

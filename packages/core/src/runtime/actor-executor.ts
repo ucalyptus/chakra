@@ -47,6 +47,9 @@ export class ActorExecutor {
           output: response.content,
           latencyMs,
           tokenUsage: response.usage,
+          model: response.model,
+          finishReason: response.finishReason,
+          toolCalls: response.toolCalls,
           timestamp: Date.now(),
         });
 

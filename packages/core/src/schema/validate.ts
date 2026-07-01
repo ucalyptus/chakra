@@ -25,10 +25,13 @@ export function validateGraph(program: Graph): ValidationError[] {
   const adjacency = buildAdjacency(allEdges);
   const reverseAdjacency = buildReverseAdjacency(allEdges);
 
+  const toolIds = new Set(program.nodes.filter((node) => node.type === 'tool').map((node) => node.id));
+
   validateNoSelfLoops(program.edges, errors);
   validateInstanceCounts(program.nodes, errors);
   validateStores(program.nodes, storeIds, errors);
   validateTemplates(program.nodes, storeIds, errors);
+  validateActorTools(program.nodes, toolIds, errors);
   validateRouterFallbacks(program.nodes, errors);
   validateAwaitReachable(program.nodes, nodeMap, reverseAdjacency, errors);
   validateOrphanNodes(program.nodes, adjacency, errors);
@@ -122,6 +125,27 @@ function validateStores(nodes: Node[], storeIds: Set<string>, errors: Validation
         severity: 'error',
         rule: 'CHANNEL_EXISTS',
         message: `Actor "${node.id}" publishes to undeclared channel "${node.publish}".`,
+        nodeId: node.id,
+      });
+    }
+  }
+}
+
+function validateActorTools(nodes: Node[], toolIds: Set<string>, errors: ValidationError[]): void {
+  for (const node of nodes) {
+    if (node.type !== 'actor' || node.tools === undefined) {
+      continue;
+    }
+
+    for (const toolId of node.tools) {
+      if (toolIds.has(toolId)) {
+        continue;
+      }
+
+      errors.push({
+        severity: 'error',
+        rule: 'TOOLS_EXIST',
+        message: `Actor "${node.id}" references undeclared tool "${toolId}".`,
         nodeId: node.id,
       });
     }
@@ -228,6 +252,17 @@ function collectUpstreamActors(nodeId: string, nodeMap: NodeMap, reverseAdjacenc
 function validateOrphanNodes(nodes: Node[], adjacency: AdjacencyMap, errors: ValidationError[]): void {
   const startIds = nodes.filter(isLoopStart).map((node) => node.id);
   const reachable = traverse(startIds, adjacency);
+
+  // Tool nodes referenced by an actor's `tools` list are invoked on demand by
+  // the LLM's function-calling decision, not by graph position — they don't
+  // need a control-flow edge to be "used".
+  for (const node of nodes) {
+    if (node.type === 'actor') {
+      for (const toolId of node.tools ?? []) {
+        reachable.add(toolId);
+      }
+    }
+  }
 
   for (const node of nodes) {
     if (reachable.has(node.id)) {

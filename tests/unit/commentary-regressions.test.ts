@@ -322,4 +322,39 @@ describe('commentary regressions', () => {
       }).run(),
     ).rejects.toThrow(/timed out/);
   });
+
+  it('resolves Actor.tools to tool definitions and forwards them to the provider', async () => {
+    const program = new GraphBuilder('actor-tools')
+      .defaults({ model: 'mock', maxIterations: 1 })
+      .roundStart('rs')
+      .effect('lookup', { effectType: 'webhook', config: { url: 'https://example.com' }, after: '' })
+      .actor('main', { type: 'llm', prompt: 'Go', tools: ['lookup'], after: 'rs' })
+      .roundEnd('re', { after: 'main', maxIterations: 1 })
+      .build();
+
+    const provider = new MockProvider([{ content: 'ok' }]);
+    const { program: compiled } = compile(program);
+    const result = await new Runner(compiled, {
+      provider,
+      io: { emit: async () => {}, waitForInput: async () => '' },
+    }).run();
+
+    expect(provider.getCalls()[0]?.tools).toEqual([
+      { name: 'lookup', description: 'Call an external HTTP webhook.', parameters: { type: 'object', properties: { body: { type: 'object' } } } },
+    ]);
+    const complete = assertTrace(result).getEvents().find(e => e.type === 'actor.complete');
+    expect(complete?.type === 'actor.complete' && complete.model).toBe('mock');
+    expect(complete?.type === 'actor.complete' && complete.finishReason).toBe('stop');
+  });
+
+  it('rejects an actor referencing a tool id that does not exist', () => {
+    const program = new GraphBuilder('missing-tool')
+      .defaults({ model: 'mock', maxIterations: 1 })
+      .roundStart('rs')
+      .actor('main', { type: 'llm', prompt: 'Go', tools: ['does-not-exist'], after: 'rs' })
+      .roundEnd('re', { after: 'main', maxIterations: 1 })
+      .build();
+
+    expect(() => compile(program)).toThrow(/TOOLS_EXIST/);
+  });
 });

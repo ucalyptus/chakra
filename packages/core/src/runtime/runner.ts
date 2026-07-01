@@ -3,19 +3,10 @@ import { StoreManager } from '../memory/store-manager.js';
 import { EventBus } from '../events/bus.js';
 import { TraceLog } from '../events/trace.js';
 import type { RuntimeEvent } from '../events/types.js';
-import type { Actor, Router, Join, Tool, LoopEnd } from '../schema/types.js';
+import type { Actor, Router, Join, Tool, ToolType, LoopEnd } from '../schema/types.js';
+import type { LLMProvider, ToolDefinition } from './provider.js';
 
-export interface LLMProvider {
-  complete(request: {
-    model: string;
-    messages: { role: 'system' | 'user' | 'assistant'; content: string }[];
-    temperature?: number;
-    max_tokens?: number;
-  }): Promise<{
-    content: string;
-    usage: { inputTokens: number; outputTokens: number; totalTokens: number };
-  }>;
-}
+export type { Message, ToolDefinition, CompletionRequest, CompletionResponse, LLMProvider } from './provider.js';
 
 export interface UserIOBridge {
   emit(message: string): Promise<void>;
@@ -216,6 +207,8 @@ export class Runner {
       prompt += `\n\nInput from previous step:\n${stringifyUnknown(input)}`;
     }
 
+    const tools = this.resolveToolDefinitions(actor.tools);
+
     const executeOne = async (instanceIndex: number): Promise<string> => {
       try {
         const startTime = Date.now();
@@ -225,6 +218,7 @@ export class Runner {
           model,
           messages: [{ role: 'user', content: prompt }],
           temperature,
+          tools: tools.length > 0 ? tools : undefined,
         });
 
         const latencyMs = Date.now() - startTime;
@@ -235,6 +229,9 @@ export class Runner {
           output: response.content,
           latencyMs,
           tokenUsage: response.usage,
+          model: response.model,
+          finishReason: response.finishReason,
+          toolCalls: response.toolCalls,
           timestamp: Date.now(),
         });
 
@@ -465,6 +462,39 @@ export class Runner {
     return total;
   }
 
+  /**
+   * Actor.tools names existing Tool nodes by id — the graph-level effect they
+   * already describe (webhook, store_write, ...) doubles as the function-calling
+   * contract. Unknown ids are dropped with an error event rather than sent to
+   * the provider (validate.ts's TOOLS_EXIST rule rejects them at compile time
+   * for the same reason; this is defense in depth for graphs built without it,
+   * e.g. via buildGraph() directly).
+   */
+  private resolveToolDefinitions(toolIds: string[] | undefined): ToolDefinition[] {
+    if (toolIds === undefined || toolIds.length === 0) return [];
+
+    const definitions: ToolDefinition[] = [];
+    for (const toolId of toolIds) {
+      const node = this.program.nodes.get(toolId);
+      if (node?.type !== 'tool') {
+        this.emitEvent({
+          type: 'error',
+          nodeId: toolId,
+          error: `Tool "${toolId}" referenced by an actor does not exist as a tool node.`,
+          timestamp: Date.now(),
+        });
+        continue;
+      }
+      const tool = node.config as Tool;
+      definitions.push({
+        name: tool.name,
+        description: TOOL_TYPE_DESCRIPTIONS[tool.tool_type],
+        parameters: TOOL_TYPE_PARAMETERS[tool.tool_type],
+      });
+    }
+    return definitions;
+  }
+
   private async executeEffect(effect: Tool, input: unknown): Promise<unknown> {
     switch (effect.tool_type) {
       case 'wait_for_user': {
@@ -589,3 +619,34 @@ function stringifyUnknown(value: unknown): string {
 function assertNever(_value: never): never {
   throw new Error('Unhandled node type');
 }
+
+const TOOL_TYPE_DESCRIPTIONS: Record<ToolType, string> = {
+  wait_for_user: 'Wait for the next message from the user.',
+  emit_to_user: 'Send a message to the user.',
+  store_write: 'Write data into a memory store.',
+  webhook: 'Call an external HTTP webhook.',
+  log: 'Write a line to the run log.',
+};
+
+const TOOL_TYPE_PARAMETERS: Record<ToolType, Record<string, unknown>> = {
+  wait_for_user: { type: 'object', properties: {} },
+  emit_to_user: {
+    type: 'object',
+    properties: { message: { type: 'string' } },
+    required: ['message'],
+  },
+  store_write: {
+    type: 'object',
+    properties: { data: { type: 'string' } },
+    required: ['data'],
+  },
+  webhook: {
+    type: 'object',
+    properties: { body: { type: 'object' } },
+  },
+  log: {
+    type: 'object',
+    properties: { message: { type: 'string' } },
+    required: ['message'],
+  },
+};
