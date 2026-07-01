@@ -568,7 +568,10 @@ export class Runner {
       }
 
       case 'emit_to_user': {
-        const message = stringifyUnknown(input ?? getConfigValue(effect.config, 'message') ?? '');
+        const inputRecord = isRecord(input) ? input : undefined;
+        const message = stringifyUnknown(
+          getConfigValue(effect.config, 'message') ?? inputRecord?.message ?? input ?? '',
+        );
         await this.io.emit(message);
         this.emitEvent({ type: 'user.output', message, timestamp: Date.now() });
         // Write to transcript
@@ -580,7 +583,10 @@ export class Runner {
 
       case 'store_write': {
         const storeId = getConfigString(effect.config, 'store');
-        const data = stringifyUnknown(getConfigValue(effect.config, 'data') ?? input ?? '');
+        const inputRecord = isRecord(input) ? input : undefined;
+        const data = stringifyUnknown(
+          getConfigValue(effect.config, 'data') ?? inputRecord?.data ?? input ?? '',
+        );
         if (storeId !== undefined && storeId !== '') {
           this.memory.write(storeId, data);
           this.emitEvent({
@@ -598,7 +604,8 @@ export class Runner {
       case 'webhook': {
         const url = getConfigString(effect.config, 'url');
         const method = getConfigString(effect.config, 'method') ?? 'POST';
-        const body = getConfigValue(effect.config, 'body') ?? input;
+        const inputRecord = isRecord(input) ? input : undefined;
+        const body = getConfigValue(effect.config, 'body') ?? inputRecord?.body ?? input;
         if (url !== undefined && url !== '') {
           const response = await fetch(url, {
             method,
@@ -643,6 +650,10 @@ export class Runner {
   private emitEvent(event: RuntimeEvent): void {
     this.eventBus.emit(event);
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function getConfigValue(config: Record<string, unknown>, key: string): unknown {

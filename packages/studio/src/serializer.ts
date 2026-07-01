@@ -313,6 +313,18 @@ export function graphToYAML(nodes: Node<ChakraNodeData>[], edges: Edge[]): strin
 
     const from = edge.source;
 
+    // A Goal compiles to a store, not a runtime node — bridge straight through
+    // to whatever the goal's own successors are instead of pointing at a node
+    // id that won't exist in the compiled program.
+    if (targetNode?.data.chakraType === 'goal') {
+      for (const to of getOutgoingTargets(edge.target, nodes, edges)) {
+        lines.push(`    - from: ${from}`);
+        lines.push(`      to: ${to}`);
+        lines.push(`      type: ${edgeType}`);
+      }
+      continue;
+    }
+
     const to = translateTargetId(edge.target, targetNode?.data);
 
     lines.push(`    - from: ${from}`);

@@ -379,7 +379,7 @@ describe('commentary regressions', () => {
             model: request.model,
             usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
             finishReason: 'tool_calls',
-            toolCalls: [{ id: 't1', name: 'lookup', arguments: JSON.stringify('hello') }],
+            toolCalls: [{ id: 't1', name: 'lookup', arguments: JSON.stringify({ data: 'hello' }) }],
           };
         }
         return {
@@ -422,7 +422,7 @@ describe('commentary regressions', () => {
           model: request.model,
           usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
           finishReason: 'tool_calls',
-          toolCalls: [{ id: 't1', name: 'lookup', arguments: JSON.stringify('hello') }],
+          toolCalls: [{ id: 't1', name: 'lookup', arguments: JSON.stringify({ data: 'hello' }) }],
         };
       },
     };
@@ -506,6 +506,55 @@ describe('commentary regressions', () => {
 
     // No control-flow edge is emitted for the goal connection.
     expect(yaml).not.toMatch(/from: goal_1/);
+  });
+
+  it('bridges an incoming edge through a Goal (rs -> goal -> worker) instead of leaving worker orphaned', () => {
+    const nodes: Array<Node<ChakraNodeData>> = [
+      { id: 'rs', type: 'chakra', position: { x: 0, y: 0 }, data: { chakraType: 'loop_start', label: 'Start', config: {} } },
+      {
+        id: 'goal_1',
+        type: 'chakra',
+        position: { x: 100, y: 0 },
+        data: {
+          chakraType: 'goal',
+          label: 'Goal',
+          config: {
+            name: 'Goal',
+            statement: 'Ship the report',
+            definition_of_done: 'Report is complete',
+            verification_criteria: [],
+          },
+        },
+      },
+      {
+        id: 'worker',
+        type: 'chakra',
+        position: { x: 200, y: 0 },
+        data: {
+          chakraType: 'actor',
+          label: 'Worker',
+          config: { name: 'Worker', model: 'mock', prompt_template: 'Do the work.', subscribe: [], publish: 'notes', temperature: 0.5 },
+        },
+      },
+      { id: 're', type: 'chakra', position: { x: 300, y: 0 }, data: { chakraType: 'loop_end', label: 'End', config: { max_iterations: 1 } } },
+    ];
+    // Only path is rs -> goal_1 -> worker -> re; there is no direct rs -> worker edge.
+    const edges: Edge[] = [
+      { id: 'e1', source: 'rs', target: 'goal_1' },
+      { id: 'e2', source: 'goal_1', target: 'worker' },
+      { id: 'e3', source: 'worker', target: 're' },
+    ];
+
+    const yaml = graphToYAML(nodes, edges);
+
+    // rs bridges straight to worker since goal_1 has no runtime node to land on.
+    expect(yaml).toMatch(/- from: rs\s*\n\s*to: worker/);
+    expect(yaml).not.toMatch(/to: goal_1/);
+
+    // worker still picks up the goal's store as context.
+    expect(yaml).toMatch(/subscribe: \["goal_1"\]/);
+
+    expect(() => compile(yaml, 'yaml')).not.toThrow();
   });
 
   it('a Goal never executes and its context reaches the actor prompt every round unchanged', async () => {
