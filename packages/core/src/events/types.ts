@@ -16,6 +16,9 @@ export type RuntimeEvent =
       output: string;
       latencyMs: number;
       tokenUsage: TokenUsage;
+      model: string;
+      finishReason: 'stop' | 'length' | 'tool_calls';
+      toolCalls?: { id: string; name: string; arguments: string }[];
       timestamp: number;
     }
   | { type: 'router.evaluated'; nodeId: string; selectedBranch: string; reason?: string; timestamp: number }

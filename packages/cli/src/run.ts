@@ -22,7 +22,7 @@ export async function run(args: string[]): Promise<void> {
     for (const w of warnings) console.warn(`  ${w}`);
   }
 
-  console.log(`Running "${program.name}" (${program.nodes.size} nodes, ${program.stores.size} channels)`);
+  console.log(`Running "${program.name}" (${program.nodes.size} nodes, ${program.stores.size} stores)`);
 
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (apiKey == null || apiKey === '') {

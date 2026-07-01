@@ -36,7 +36,7 @@ export function buildGraph(program: Graph): CompiledGraph {
     }
   }
 
-  // Memory channels
+  // Memory stores
   const stores = new Map<string, {
     id: string;
     name: string;
@@ -45,15 +45,19 @@ export function buildGraph(program: Graph): CompiledGraph {
     maxTokens?: number;
     initialValue?: string;
     builtin?: boolean;
+    format?: Store['format'];
+    schema?: Store['schema'];
   }>(
-    program.stores.map(ch => [ch.id, {
-      id: ch.id,
-      name: ch.name,
-      writeMode: ch.write_mode,
-      maxEntries: ch.max_entries,
-      maxTokens: ch.max_tokens,
-      initialValue: ch.initial_value,
-      builtin: ch.builtin,
+    program.stores.map(store => [store.id, {
+      id: store.id,
+      name: store.name,
+      writeMode: store.write_mode,
+      maxEntries: store.max_entries,
+      maxTokens: store.max_tokens,
+      initialValue: store.initial_value,
+      builtin: store.builtin,
+      format: store.format,
+      schema: store.schema,
     }])
   );
 

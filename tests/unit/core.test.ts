@@ -9,7 +9,7 @@ describe('Roundtable Core', () => {
     it('compiles a simple program', () => {
       const program = new GraphBuilder('test-program')
         .defaults({ model: 'mock', maxIterations: 2 })
-        .channel('notes', { mode: 'append' })
+        .store('notes', { mode: 'append' })
         .roundStart('rs1')
         .actor('greeter', {
           type: 'llm',
@@ -27,18 +27,18 @@ describe('Roundtable Core', () => {
       expect(result.program.loopEnds).toContain('re1');
     });
 
-    it('rejects programs with missing channels', () => {
+    it('rejects programs with missing stores', () => {
       const program = new GraphBuilder('bad-program')
         .roundStart('rs1')
         .actor('broken', {
           type: 'llm',
-          subscribe: ['nonexistent_channel'],
+          subscribe: ['nonexistent_store'],
           prompt: 'test',
         })
         .roundEnd('re1')
         .build();
 
-      expect(() => compile(program)).toThrow(/CHANNEL_EXISTS/);
+      expect(() => compile(program)).toThrow(/STORE_EXISTS/);
     });
   });
 
@@ -46,7 +46,7 @@ describe('Roundtable Core', () => {
     it('executes a single-actor program for 2 rounds', async () => {
       const program = new GraphBuilder('simple-loop')
         .defaults({ model: 'mock', maxIterations: 2 })
-        .channel('notes', { mode: 'append' })
+        .store('notes', { mode: 'append' })
         .roundStart('rs1')
         .actor('thinker', {
           type: 'llm',
@@ -88,7 +88,7 @@ describe('Roundtable Core', () => {
     it('handles router nodes with structured output', async () => {
       const program = new GraphBuilder('router-program')
         .defaults({ model: 'mock', maxIterations: 1 })
-        .channel('output', { mode: 'append' })
+        .store('output', { mode: 'append' })
         .roundStart('rs1')
         .actor('decider', {
           type: 'llm',

@@ -59,11 +59,11 @@ export function ConfigPanel({ node, onChange }: Props) {
             <input style={inputStyle} type="number" step="0.1" min="0" max="2"
               value={cfg.temperature ?? 0.7} onChange={e => onChange(id, { ...cfg, temperature: parseFloat(e.target.value) })} />
 
-            <label style={labelStyle}>Subscribe channels (comma-separated)</label>
+            <label style={labelStyle}>Subscribe stores (comma-separated)</label>
             <input style={inputStyle} value={(cfg.subscribe || []).join(', ')}
               onChange={e => onChange(id, { ...cfg, subscribe: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })} />
 
-            <label style={labelStyle}>Publish channel</label>
+            <label style={labelStyle}>Publish store</label>
             <input style={inputStyle} value={cfg.publish || ''} onChange={e => onChange(id, { ...cfg, publish: e.target.value })} />
 
             <label style={labelStyle}>Prompt template</label>
@@ -93,19 +93,11 @@ export function ConfigPanel({ node, onChange }: Props) {
               value={(cfg.verification_criteria || []).join('\n')}
               onChange={e => onChange(id, { ...cfg, verification_criteria: e.target.value.split('\n').map(s => s.trim()).filter(Boolean) })} />
 
-            <label style={labelStyle}>Subscribe channels (comma-separated)</label>
-            <input style={inputStyle} value={(cfg.subscribe || []).join(', ')}
-              onChange={e => onChange(id, { ...cfg, subscribe: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })} />
-
-            <label style={labelStyle}>Publish channel</label>
-            <input style={inputStyle} value={cfg.publish || ''} onChange={e => onChange(id, { ...cfg, publish: e.target.value })} />
-
-            <label style={labelStyle}>Model</label>
-            <input style={inputStyle} value={cfg.model || ''} onChange={e => onChange(id, { ...cfg, model: e.target.value })} />
-
-            <label style={labelStyle}>Temperature</label>
-            <input style={inputStyle} type="number" step="0.1" min="0" max="2"
-              value={cfg.temperature ?? 0.3} onChange={e => onChange(id, { ...cfg, temperature: parseFloat(e.target.value) })} />
+            <div style={{ fontSize: 12, color: '#8892a4', fontStyle: 'italic', marginTop: 4 }}>
+              A Goal compiles to a store, not an actor — it has no model or temperature.
+              Connect it to the actors that should see this context; they'll pick it up
+              automatically.
+            </div>
           </>
         );
       })()}
@@ -136,11 +128,11 @@ export function ConfigPanel({ node, onChange }: Props) {
               value={(cfg.verification_criteria || []).join('\n')}
               onChange={e => onChange(id, { ...cfg, verification_criteria: e.target.value.split('\n').map(s => s.trim()).filter(Boolean) })} />
 
-            <label style={labelStyle}>Subscribe channels (comma-separated)</label>
+            <label style={labelStyle}>Subscribe stores (comma-separated)</label>
             <input style={inputStyle} value={(cfg.subscribe || []).join(', ')}
               onChange={e => onChange(id, { ...cfg, subscribe: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })} />
 
-            <label style={labelStyle}>Publish channel</label>
+            <label style={labelStyle}>Publish store</label>
             <input style={inputStyle} value={cfg.publish || ''} onChange={e => onChange(id, { ...cfg, publish: e.target.value })} />
 
             <label style={labelStyle}>Model</label>
@@ -202,7 +194,7 @@ export function ConfigPanel({ node, onChange }: Props) {
             <select style={inputStyle} value={cfg.tool_type ?? 'emit_to_user'} onChange={e => onChange(id, { ...cfg, tool_type: e.target.value as ToolConfig['tool_type'] })}>
               <option value="wait_for_user">wait_for_user — receive input</option>
               <option value="emit_to_user">emit_to_user — send response</option>
-              <option value="store_write">store_write — write to channel</option>
+              <option value="store_write">store_write — write to store</option>
               <option value="log">log — debug event</option>
             </select>
           </>

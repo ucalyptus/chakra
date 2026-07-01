@@ -14,7 +14,7 @@ import { OpenRouterProvider } from '@chakra-dsl/providers';
 
 const program = new GraphBuilder('deep-reasoner')
   .defaults({ model: 'minimax/minimax-01', maxIterations: 5 })
-  .channel('working_ledger', { mode: 'replace' })
+  .store('working_ledger', { mode: 'replace' })
   .roundStart('rs1')
   .actor('orchestrator', {
     type: 'llm',
@@ -40,10 +40,16 @@ Six node types compose every program:
 |-----------|---------|
 | **Actor** | LLM inference or autonomous agent loop |
 | **Router** | Branch selection (LLM-driven or expression) |
-| **Effect** | Side effects: user I/O, channel writes, webhooks |
+| **Effect** | Side effects: user I/O, store writes, webhooks |
 | **AwaitAll** | Synchronization barrier for parallel actors |
-| **Channel** | Persistent named data (append/replace, FIFO, token budgets) |
+| **Store** | Persistent named data (append/replace, FIFO, token budgets) |
 | **Round Start / Round End** | Round control with halt conditions |
+
+Reference a store's content from a prompt with `{{channel:storeId}}` (optionally
+`{{channel:storeId:maxTokens}}` to cap injected size). The keyword stays
+`channel` for backward compatibility with every already-authored prompt
+template — it's unrelated to the `GraphBuilder.store()` / `Store` naming
+used everywhere else in the API.
 
 ## Architecture
 
@@ -60,7 +66,7 @@ Core never imports platform bindings. Provider and I/O are dependency-injected.
 
 ```bash
 npm install
-npm test        # 5 unit + 2 integration tests
+npm test        # 24 unit + 2 integration tests
 ```
 
 ## License

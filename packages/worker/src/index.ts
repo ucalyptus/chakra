@@ -317,7 +317,7 @@ export default {
               response = msg;
             },
           },
-          // Seed transcript channel with conversation history
+          // Seed transcript store with conversation history
           ...(transcript ? { initialMemory: { transcript } } : {}),
         });
 

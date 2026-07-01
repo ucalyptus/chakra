@@ -3,19 +3,10 @@ import { StoreManager } from '../memory/store-manager.js';
 import { EventBus } from '../events/bus.js';
 import { TraceLog } from '../events/trace.js';
 import type { RuntimeEvent } from '../events/types.js';
-import type { Actor, Router, Join, Tool, LoopEnd } from '../schema/types.js';
+import type { Actor, Router, Join, Tool, ToolType, LoopEnd } from '../schema/types.js';
+import type { LLMProvider, Message, ToolDefinition } from './provider.js';
 
-export interface LLMProvider {
-  complete(request: {
-    model: string;
-    messages: { role: 'system' | 'user' | 'assistant'; content: string }[];
-    temperature?: number;
-    max_tokens?: number;
-  }): Promise<{
-    content: string;
-    usage: { inputTokens: number; outputTokens: number; totalTokens: number };
-  }>;
-}
+export type { Message, ToolDefinition, CompletionRequest, CompletionResponse, LLMProvider } from './provider.js';
 
 export interface UserIOBridge {
   emit(message: string): Promise<void>;
@@ -38,6 +29,15 @@ export interface GraphResult {
   haltReason?: string;
 }
 
+interface JoinGateState {
+  slots: unknown[];
+  required: number;
+  firstArrivalAt: number;
+  timeoutMs?: number;
+  onTimeout: 'proceed_partial' | 'fail';
+  resolved: boolean;
+}
+
 export class Runner {
   private round = 0;
   private program: CompiledGraph;
@@ -47,6 +47,8 @@ export class Runner {
   private eventBus: EventBus;
   private trace: TraceLog;
   private maxConcurrency: number;
+  private joinGates = new Map<string, JoinGateState>();
+  private upstreamActorTotals = new Map<string, number>();
   private halted = false;
   private haltReason?: string;
 
@@ -58,17 +60,19 @@ export class Runner {
     this.eventBus = new EventBus();
     this.trace = new TraceLog();
 
-    // Initialize memory from compiled program channels
-    const channelConfigs = Array.from(program.stores.values()).map(ch => ({
-      id: ch.id,
-      name: ch.name,
-      write_mode: ch.writeMode,
-      max_entries: ch.maxEntries,
-      max_tokens: ch.maxTokens,
-      initial_value: ch.initialValue,
-      builtin: ch.builtin,
+    // Initialize memory from compiled program stores
+    const storeConfigs = Array.from(program.stores.values()).map(store => ({
+      id: store.id,
+      name: store.name,
+      write_mode: store.writeMode,
+      max_entries: store.maxEntries,
+      max_tokens: store.maxTokens,
+      initial_value: store.initialValue,
+      builtin: store.builtin,
+      format: store.format,
+      schema: store.schema,
     }));
-    this.memory = new StoreManager(channelConfigs);
+    this.memory = new StoreManager(storeConfigs);
     for (const [storeId, value] of Object.entries(config.initialMemory ?? {})) {
       if (this.memory.getStore(storeId)) {
         this.memory.write(storeId, value);
@@ -88,6 +92,7 @@ export class Runner {
     while (!this.halted && this.round < maxRounds) {
       this.round++;
       this.memory.setRound(this.round);
+      this.joinGates.clear();
 
       this.emitEvent({ type: 'round.start', round: this.round, timestamp: Date.now() });
 
@@ -143,6 +148,12 @@ export class Runner {
       return result;
     }
 
+    // Join hasn't collected enough slots yet — this arrival stops here.
+    // The call that completes the gate is the one that proceeds downstream.
+    if (compiledNode.type === 'join' && result === undefined) {
+      return undefined;
+    }
+
     // Follow outgoing edges for other node types
     const outEdges = this.program.edges.get(nodeId) ?? [];
     const controlEdges = outEdges.filter(e => e.type === 'control' || e.type === 'data');
@@ -184,13 +195,14 @@ export class Runner {
     const model = actor.model ?? this.program.defaults.model ?? 'minimax/minimax-m1-m3';
     const temperature = actor.temperature ?? this.program.defaults.temperature;
 
-    // Permissive regex for template injection — allows {{ channel : storeId }} 
-    // whitespace variants that the permissive validator accepts.
-    const CHANNEL_RX = /\{\{\s*channel\s*:\s*(\w+)(?::(\d+))?\s*\}\}/g;
+    // Permissive regex for template injection — allows {{ channel : storeId }}
+    // whitespace variants that the permissive validator accepts. The `channel`
+    // keyword is the DSL template syntax itself and isn't renamed.
+    const STORE_TEMPLATE_RX = /\{\{\s*channel\s*:\s*(\w+)(?::(\d+))?\s*\}\}/g;
     let prompt = actor.prompt_template;
     for (const storeId of actor.subscribe) {
       const content = this.memory.read(storeId);
-      prompt = prompt.replace(CHANNEL_RX, (match, id) => id === storeId ? content : match);
+      prompt = prompt.replace(STORE_TEMPLATE_RX, (match, id) => id === storeId ? content : match);
     }
 
     // Add input context if present
@@ -198,16 +210,55 @@ export class Runner {
       prompt += `\n\nInput from previous step:\n${stringifyUnknown(input)}`;
     }
 
+    const { definitions: tools, byName: toolsByName } = this.resolveToolDefinitions(actor.tools);
+
     const executeOne = async (instanceIndex: number): Promise<string> => {
       try {
         const startTime = Date.now();
         this.emitEvent({ type: 'actor.start', nodeId: actor.id, instanceIndex, prompt, timestamp: startTime });
 
-        const response = await this.provider.complete({
+        const messages: Message[] = [{ role: 'user', content: prompt }];
+        let response = await this.provider.complete({
           model,
-          messages: [{ role: 'user', content: prompt }],
+          messages,
           temperature,
+          tools: tools.length > 0 ? tools : undefined,
         });
+        const totalUsage = { ...response.usage };
+
+        // actor_type 'agent' loops: execute requested tool calls, feed their
+        // results back, and keep going until the model stops calling tools
+        // or the round budget runs out. actor_type 'llm' is single-shot — a
+        // tool call it makes still runs (see below), but there's no second
+        // turn to report back to.
+        if (actor.actor_type === 'agent') {
+          let iterations = 0;
+          while (response.finishReason === 'tool_calls' && (response.toolCalls?.length ?? 0) > 0 && iterations < MAX_AGENT_TOOL_ITERATIONS) {
+            iterations++;
+            messages.push({ role: 'assistant', content: response.content });
+            for (const call of response.toolCalls ?? []) {
+              const output = await this.runToolCall(call, toolsByName);
+              messages.push({ role: 'user', content: `Tool "${call.name}" result: ${output}` });
+            }
+            response = await this.provider.complete({ model, messages, temperature, tools });
+            totalUsage.inputTokens += response.usage.inputTokens;
+            totalUsage.outputTokens += response.usage.outputTokens;
+            totalUsage.totalTokens += response.usage.totalTokens;
+          }
+
+          if (response.finishReason === 'tool_calls' && iterations >= MAX_AGENT_TOOL_ITERATIONS) {
+            this.emitEvent({
+              type: 'error',
+              nodeId: actor.id,
+              error: `Actor "${actor.id}" hit the ${MAX_AGENT_TOOL_ITERATIONS}-iteration tool-call limit while the model still requested tool_calls; returning its last response as final output instead of continuing.`,
+              timestamp: Date.now(),
+            });
+          }
+        } else if (response.finishReason === 'tool_calls') {
+          for (const call of response.toolCalls ?? []) {
+            await this.runToolCall(call, toolsByName);
+          }
+        }
 
         const latencyMs = Date.now() - startTime;
         this.emitEvent({
@@ -216,11 +267,14 @@ export class Runner {
           instanceIndex,
           output: response.content,
           latencyMs,
-          tokenUsage: response.usage,
+          tokenUsage: totalUsage,
+          model: response.model,
+          finishReason: response.finishReason,
+          toolCalls: response.toolCalls,
           timestamp: Date.now(),
         });
 
-        // Publish to channel if configured
+        // Publish to store if configured
         if (actor.publish !== undefined && actor.publish !== '') {
           this.memory.write(actor.publish, response.content);
           this.emitEvent({
@@ -350,27 +404,158 @@ export class Runner {
     return undefined;
   }
 
-  private executeJoin(awaitAll: Join, input: unknown): Promise<unknown[]> {
-    // In our sequential execution model, Join receives aggregated input
-    // from parallel instances. Input should already be an array.
-    if (Array.isArray(input)) {
-      const outputs = input.map((item): unknown => item);
-      this.emitEvent({
-        type: 'await.satisfied',
-        awaitId: awaitAll.id,
-        outputs,
-        timestamp: Date.now(),
-      });
-      return Promise.resolve(outputs);
+  /**
+   * Join accumulates one slot per incoming activation and only proceeds
+   * downstream once the configured mode/await_count is met:
+   *   any      → proceed on the first slot
+   *   all      → wait for every reachable upstream actor instance
+   *   n_of_m   → wait for await_count slots (default when await_count is a number)
+   *
+   * Returns undefined while the gate is still pending — the caller (activate())
+   * treats that as "stop here"; only the call that completes the gate carries
+   * the aggregated results downstream. timeout_ms/on_timeout are checked
+   * against wall-clock time elapsed since the first slot arrived, so a join
+   * that never collects enough slots this round can still resolve instead of
+   * silently stalling forever.
+   */
+  private executeJoin(join: Join, input: unknown): unknown[] | undefined {
+    const mode = join.mode ?? (join.await_count === 'all' ? 'all' : 'n_of_m');
+    const required = mode === 'any'
+      ? 1
+      : mode === 'all'
+        ? this.getUpstreamActorInstanceTotal(join.id)
+        : (typeof join.await_count === 'number' ? join.await_count : this.getUpstreamActorInstanceTotal(join.id));
+
+    let gate = this.joinGates.get(join.id);
+    if (!gate) {
+      gate = {
+        slots: [],
+        required,
+        firstArrivalAt: Date.now(),
+        timeoutMs: join.timeout_ms,
+        onTimeout: join.on_timeout ?? 'proceed_partial',
+        resolved: false,
+      };
+      this.joinGates.set(join.id, gate);
     }
-    const results: unknown[] = [input];
+
+    // Gate already fired downstream this round — a late slot is recorded
+    // for observability but must not re-trigger the subgraph past the join.
+    if (gate.resolved) {
+      return undefined;
+    }
+
+    const incoming: unknown[] = Array.isArray(input) ? (input as unknown[]) : [input];
+    gate.slots.push(...incoming);
+
     this.emitEvent({
-      type: 'await.satisfied',
-      awaitId: awaitAll.id,
-      outputs: results,
+      type: 'await.slot_filled',
+      awaitId: join.id,
+      filledCount: gate.slots.length,
+      totalCount: gate.required,
       timestamp: Date.now(),
     });
-    return Promise.resolve(results);
+
+    const satisfied = gate.slots.length >= gate.required;
+    const timedOut = !satisfied && gate.timeoutMs !== undefined && Date.now() - gate.firstArrivalAt >= gate.timeoutMs;
+
+    if (!satisfied && !timedOut) {
+      return undefined;
+    }
+
+    if (timedOut && gate.onTimeout === 'fail') {
+      gate.resolved = true;
+      const message = `Join "${join.id}" timed out after ${gate.timeoutMs}ms with ${gate.slots.length}/${gate.required} slot(s) filled.`;
+      this.emitEvent({ type: 'error', nodeId: join.id, error: message, timestamp: Date.now() });
+      throw new Error(message);
+    }
+
+    gate.resolved = true;
+    this.emitEvent({ type: 'await.satisfied', awaitId: join.id, outputs: gate.slots, timestamp: Date.now() });
+    return gate.slots;
+  }
+
+  /** Total actor instances reachable upstream of a join — the denominator for mode: 'all'. */
+  private getUpstreamActorInstanceTotal(joinId: string): number {
+    const cached = this.upstreamActorTotals.get(joinId);
+    if (cached !== undefined) return cached;
+
+    const visited = new Set<string>();
+    const queue = [...(this.program.reverseEdges.get(joinId) ?? [])];
+    let total = 0;
+
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (current === undefined || visited.has(current)) continue;
+      visited.add(current);
+      const node = this.program.nodes.get(current);
+      if (node?.type === 'actor') {
+        total += (node.config as Actor).instances ?? 1;
+      }
+      for (const prev of this.program.reverseEdges.get(current) ?? []) {
+        if (!visited.has(prev)) queue.push(prev);
+      }
+    }
+
+    this.upstreamActorTotals.set(joinId, total);
+    return total;
+  }
+
+  /**
+   * Actor.tools names existing Tool nodes by id — the graph-level effect they
+   * already describe (webhook, store_write, ...) doubles as the function-calling
+   * contract. Unknown ids are dropped with an error event rather than sent to
+   * the provider (validate.ts's TOOLS_EXIST rule rejects them at compile time
+   * for the same reason; this is defense in depth for graphs built without it,
+   * e.g. via buildGraph() directly).
+   */
+  private resolveToolDefinitions(toolIds: string[] | undefined): { definitions: ToolDefinition[]; byName: Map<string, Tool> } {
+    const definitions: ToolDefinition[] = [];
+    const byName = new Map<string, Tool>();
+    if (toolIds === undefined || toolIds.length === 0) return { definitions, byName };
+
+    for (const toolId of toolIds) {
+      const node = this.program.nodes.get(toolId);
+      if (node?.type !== 'tool') {
+        this.emitEvent({
+          type: 'error',
+          nodeId: toolId,
+          error: `Tool "${toolId}" referenced by an actor does not exist as a tool node.`,
+          timestamp: Date.now(),
+        });
+        continue;
+      }
+      const tool = node.config as Tool;
+      definitions.push({
+        name: tool.name,
+        description: TOOL_TYPE_DESCRIPTIONS[tool.tool_type],
+        parameters: TOOL_TYPE_PARAMETERS[tool.tool_type],
+      });
+      byName.set(tool.name, tool);
+    }
+    return { definitions, byName };
+  }
+
+  /** Executes a tool call the LLM requested by dispatching to the matching Tool node's effect. */
+  private async runToolCall(call: { id: string; name: string; arguments: string }, toolsByName: Map<string, Tool>): Promise<string> {
+    const tool = toolsByName.get(call.name);
+    if (!tool) {
+      return `Error: tool "${call.name}" is not available to this actor.`;
+    }
+
+    let args: unknown;
+    try {
+      args = JSON.parse(call.arguments) as unknown;
+    } catch {
+      args = call.arguments;
+    }
+
+    try {
+      const result = await this.executeEffect(tool, args);
+      return stringifyUnknown(result);
+    } catch (err) {
+      return `Error executing tool "${call.name}": ${err instanceof Error ? err.message : String(err)}`;
+    }
   }
 
   private async executeEffect(effect: Tool, input: unknown): Promise<unknown> {
@@ -392,7 +577,10 @@ export class Runner {
       }
 
       case 'emit_to_user': {
-        const message = stringifyUnknown(input ?? getConfigValue(effect.config, 'message') ?? '');
+        const inputRecord = isRecord(input) ? input : undefined;
+        const message = stringifyUnknown(
+          getConfigValue(effect.config, 'message') ?? inputRecord?.message ?? input ?? '',
+        );
         await this.io.emit(message);
         this.emitEvent({ type: 'user.output', message, timestamp: Date.now() });
         // Write to transcript
@@ -403,8 +591,11 @@ export class Runner {
       }
 
       case 'store_write': {
-        const storeId = getConfigString(effect.config, 'channel');
-        const data = stringifyUnknown(getConfigValue(effect.config, 'data') ?? input ?? '');
+        const storeId = getConfigString(effect.config, 'store');
+        const inputRecord = isRecord(input) ? input : undefined;
+        const data = stringifyUnknown(
+          getConfigValue(effect.config, 'data') ?? inputRecord?.data ?? input ?? '',
+        );
         if (storeId !== undefined && storeId !== '') {
           this.memory.write(storeId, data);
           this.emitEvent({
@@ -422,7 +613,8 @@ export class Runner {
       case 'webhook': {
         const url = getConfigString(effect.config, 'url');
         const method = getConfigString(effect.config, 'method') ?? 'POST';
-        const body = getConfigValue(effect.config, 'body') ?? input;
+        const inputRecord = isRecord(input) ? input : undefined;
+        const body = getConfigValue(effect.config, 'body') ?? inputRecord?.body ?? input;
         if (url !== undefined && url !== '') {
           const response = await fetch(url, {
             method,
@@ -469,6 +661,10 @@ export class Runner {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function getConfigValue(config: Record<string, unknown>, key: string): unknown {
   return config[key];
 }
@@ -497,3 +693,37 @@ function stringifyUnknown(value: unknown): string {
 function assertNever(_value: never): never {
   throw new Error('Unhandled node type');
 }
+
+/** Bounds actor_type: 'agent' tool-call loops so a misbehaving model can't spin forever. */
+const MAX_AGENT_TOOL_ITERATIONS = 4;
+
+const TOOL_TYPE_DESCRIPTIONS: Record<ToolType, string> = {
+  wait_for_user: 'Wait for the next message from the user.',
+  emit_to_user: 'Send a message to the user.',
+  store_write: 'Write data into a memory store.',
+  webhook: 'Call an external HTTP webhook.',
+  log: 'Write a line to the run log.',
+};
+
+const TOOL_TYPE_PARAMETERS: Record<ToolType, Record<string, unknown>> = {
+  wait_for_user: { type: 'object', properties: {} },
+  emit_to_user: {
+    type: 'object',
+    properties: { message: { type: 'string' } },
+    required: ['message'],
+  },
+  store_write: {
+    type: 'object',
+    properties: { data: { type: 'string' } },
+    required: ['data'],
+  },
+  webhook: {
+    type: 'object',
+    properties: { body: { type: 'object' } },
+  },
+  log: {
+    type: 'object',
+    properties: { message: { type: 'string' } },
+    required: ['message'],
+  },
+};

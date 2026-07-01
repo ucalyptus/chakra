@@ -24,7 +24,7 @@ export class GraphBuilder {
 
   constructor(name: string) {
     this.name = name;
-    // Auto-add transcript channel
+    // Auto-add transcript store
     this.stores.push({
       id: 'transcript',
       name: 'Conversation Transcript',
@@ -42,7 +42,7 @@ export class GraphBuilder {
     return this;
   }
 
-  public channel(id: string, opts: { mode: 'append' | 'replace'; maxEntries?: number; maxTokens?: number; initialValue?: string }): this {
+  public store(id: string, opts: { mode: 'append' | 'replace'; maxEntries?: number; maxTokens?: number; initialValue?: string }): this {
     this.stores.push({
       id,
       name: id,
