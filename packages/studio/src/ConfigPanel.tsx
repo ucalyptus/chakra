@@ -59,11 +59,11 @@ export function ConfigPanel({ node, onChange }: Props) {
             <input style={inputStyle} type="number" step="0.1" min="0" max="2"
               value={cfg.temperature ?? 0.7} onChange={e => onChange(id, { ...cfg, temperature: parseFloat(e.target.value) })} />
 
-            <label style={labelStyle}>Subscribe channels (comma-separated)</label>
+            <label style={labelStyle}>Subscribe stores (comma-separated)</label>
             <input style={inputStyle} value={(cfg.subscribe || []).join(', ')}
               onChange={e => onChange(id, { ...cfg, subscribe: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })} />
 
-            <label style={labelStyle}>Publish channel</label>
+            <label style={labelStyle}>Publish store</label>
             <input style={inputStyle} value={cfg.publish || ''} onChange={e => onChange(id, { ...cfg, publish: e.target.value })} />
 
             <label style={labelStyle}>Prompt template</label>
@@ -128,11 +128,11 @@ export function ConfigPanel({ node, onChange }: Props) {
               value={(cfg.verification_criteria || []).join('\n')}
               onChange={e => onChange(id, { ...cfg, verification_criteria: e.target.value.split('\n').map(s => s.trim()).filter(Boolean) })} />
 
-            <label style={labelStyle}>Subscribe channels (comma-separated)</label>
+            <label style={labelStyle}>Subscribe stores (comma-separated)</label>
             <input style={inputStyle} value={(cfg.subscribe || []).join(', ')}
               onChange={e => onChange(id, { ...cfg, subscribe: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })} />
 
-            <label style={labelStyle}>Publish channel</label>
+            <label style={labelStyle}>Publish store</label>
             <input style={inputStyle} value={cfg.publish || ''} onChange={e => onChange(id, { ...cfg, publish: e.target.value })} />
 
             <label style={labelStyle}>Model</label>
@@ -194,7 +194,7 @@ export function ConfigPanel({ node, onChange }: Props) {
             <select style={inputStyle} value={cfg.tool_type ?? 'emit_to_user'} onChange={e => onChange(id, { ...cfg, tool_type: e.target.value as ToolConfig['tool_type'] })}>
               <option value="wait_for_user">wait_for_user — receive input</option>
               <option value="emit_to_user">emit_to_user — send response</option>
-              <option value="store_write">store_write — write to channel</option>
+              <option value="store_write">store_write — write to store</option>
               <option value="log">log — debug event</option>
             </select>
           </>

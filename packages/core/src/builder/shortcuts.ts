@@ -35,7 +35,7 @@ export function debate(
 ): Graph {
   const builder = new GraphBuilder(name)
     .defaults({ model: opts.model })
-    .channel('arguments', { mode: 'append' })
+    .store('arguments', { mode: 'append' })
     .roundStart('rs');
 
   for (const debater of opts.debaters) {
@@ -78,13 +78,13 @@ export function chainOfThought(
   opts: {
     model?: string;
     steps: { id: string; prompt: string }[];
-    channel?: string;
+    store?: string;
   },
 ): Graph {
-  const storeId = opts.channel ?? 'reasoning';
+  const storeId = opts.store ?? 'reasoning';
   const builder = new GraphBuilder(name)
     .defaults({ model: opts.model })
-    .channel(storeId, { mode: 'append' })
+    .store(storeId, { mode: 'append' })
     .roundStart('rs');
 
   let lastId = 'rs';
@@ -112,7 +112,7 @@ export function interactiveLoop(
 ): Graph {
   return new GraphBuilder(name)
     .defaults({ model: opts.model, maxIterations: opts.maxIterations ?? 50 })
-    .channel('notes', { mode: 'append' })
+    .store('notes', { mode: 'append' })
     .roundStart('rs')
     .actor('assistant', {
       type: 'llm',

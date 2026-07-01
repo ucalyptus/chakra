@@ -69,7 +69,7 @@ function buildGoalPrompt(cfg: GoalConfig): string {
     '',
     `Verification criteria:\n${criteria}`,
     '',
-    'Use the subscribed channels as context. Produce the best next output that moves the work to done.',
+    'Use the subscribed stores as context. Produce the best next output that moves the work to done.',
   ].join('\n');
 }
 
@@ -162,38 +162,38 @@ export function graphToYAML(nodes: Node<ChakraNodeData>[], edges: Edge[]): strin
   lines.push('    max_iterations: 10');
   lines.push('');
 
-  const channels = new Set<string>();
-  channels.add('transcript');
+  const stores = new Set<string>();
+  stores.add('transcript');
   const goalStoreValues = new Map<string, string>();
   const goalContext = collectGoalContext(nodes, edges);
 
   for (const node of nodes) {
     if (node.data.chakraType === 'actor') {
       const cfg = node.data.config as ActorConfig;
-      cfg.subscribe?.forEach(ch => channels.add(ch));
-      if (cfg.publish) channels.add(cfg.publish);
+      cfg.subscribe?.forEach(storeId => stores.add(storeId));
+      if (cfg.publish) stores.add(cfg.publish);
     }
 
     if (node.data.chakraType === 'goal') {
       const cfg = node.data.config as GoalConfig;
-      channels.add(node.id);
+      stores.add(node.id);
       goalStoreValues.set(node.id, buildGoalPrompt(cfg));
     }
 
     if (node.data.chakraType === 'gate') {
       const cfg = node.data.config as GateConfig;
-      cfg.subscribe?.forEach(ch => channels.add(ch));
-      if (cfg.publish) channels.add(cfg.publish);
+      cfg.subscribe?.forEach(storeId => stores.add(storeId));
+      if (cfg.publish) stores.add(cfg.publish);
     }
   }
 
   lines.push('  stores:');
-  for (const ch of Array.from(channels)) {
-    lines.push(`    - id: ${yamlQuote(ch)}`);
-    lines.push(`      name: ${yamlQuote(ch)}`);
-    const goalValue = goalStoreValues.get(ch);
+  for (const storeId of Array.from(stores)) {
+    lines.push(`    - id: ${yamlQuote(storeId)}`);
+    lines.push(`      name: ${yamlQuote(storeId)}`);
+    const goalValue = goalStoreValues.get(storeId);
     lines.push(`      write_mode: ${goalValue !== undefined ? 'replace' : 'append'}`);
-    if (ch === 'transcript') lines.push('      builtin: true');
+    if (storeId === 'transcript') lines.push('      builtin: true');
     if (goalValue !== undefined) lines.push(`      initial_value: ${yamlQuote(goalValue)}`);
   }
   lines.push('');

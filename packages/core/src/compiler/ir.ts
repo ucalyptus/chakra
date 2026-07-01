@@ -30,7 +30,7 @@ export interface CompiledGraph {
   nodes: Map<string, CompiledNode>;
   edges: Map<string, Edge[]>; // adjacency: nodeId -> outgoing edges
   reverseEdges: Map<string, string[]>; // nodeId -> incoming node IDs
-  stores: Map<string, { id: string; name: string; writeMode: 'append' | 'replace'; maxEntries?: number; maxTokens?: number; initialValue?: string; builtin?: boolean }>;
+  stores: Map<string, { id: string; name: string; writeMode: 'append' | 'replace'; maxEntries?: number; maxTokens?: number; initialValue?: string; builtin?: boolean; format?: 'raw' | 'structured'; schema?: Record<string, unknown> }>;
   loopStarts: string[];
   loopEnds: string[];
   executionGroups: ExecutionGroup[];

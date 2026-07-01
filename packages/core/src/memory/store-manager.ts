@@ -22,11 +22,11 @@ export class StoreManager {
 
   constructor(configs: StoreConfig[]) {
     for (const config of configs) {
-      const channel = new StoreInstance(config);
-      this.stores.set(config.id, channel);
+      const store = new StoreInstance(config);
+      this.stores.set(config.id, store);
 
       if (config.initial_value !== undefined) {
-        channel.write(config.initial_value, 0);
+        store.write(config.initial_value, 0);
       }
     }
   }
@@ -36,23 +36,23 @@ export class StoreManager {
   }
 
   public write(storeId: string, data: string): void {
-    const channel = this.stores.get(storeId);
+    const store = this.stores.get(storeId);
 
-    if (!channel) {
-      throw new Error(`Unknown memory channel: ${storeId}`);
+    if (!store) {
+      throw new Error(`Unknown memory store: ${storeId}`);
     }
 
-    channel.write(data, this.currentRound);
+    store.write(data, this.currentRound);
   }
 
   public read(storeId: string): string {
-    const channel = this.stores.get(storeId);
+    const store = this.stores.get(storeId);
 
-    if (!channel) {
-      throw new Error(`Unknown memory channel: ${storeId}`);
+    if (!store) {
+      throw new Error(`Unknown memory store: ${storeId}`);
     }
 
-    return channel.read();
+    return store.read();
   }
 
   public inject(template: CompiledTemplate, subscriptions: string[]): string {
@@ -67,13 +67,13 @@ export class StoreManager {
         continue;
       }
 
-      const channel = this.stores.get(injection.storeId);
-      if (!channel) {
-        throw new Error(`Unknown memory channel: ${injection.storeId}`);
+      const store = this.stores.get(injection.storeId);
+      if (!store) {
+        throw new Error(`Unknown memory store: ${injection.storeId}`);
       }
 
-      const maxTokens = injection.maxTokens ?? channel.maxTokens;
-      prompt += this.truncateToTokenBudget(channel.read(), maxTokens);
+      const maxTokens = injection.maxTokens ?? store.maxTokens;
+      prompt += this.truncateToTokenBudget(store.read(), maxTokens);
     }
 
     return prompt;
@@ -82,16 +82,16 @@ export class StoreManager {
   public snapshot(): MemorySnapshot {
     const stores = new Map<string, MemoryEntry[]>();
 
-    for (const [storeId, channel] of this.stores.entries()) {
-      stores.set(storeId, channel.snapshot());
+    for (const [storeId, store] of this.stores.entries()) {
+      stores.set(storeId, store.snapshot());
     }
 
     return { stores };
   }
 
   public restore(snapshot: MemorySnapshot): void {
-    for (const [storeId, channel] of this.stores.entries()) {
-      channel.restore(snapshot.stores.get(storeId) ?? []);
+    for (const [storeId, store] of this.stores.entries()) {
+      store.restore(snapshot.stores.get(storeId) ?? []);
     }
   }
 

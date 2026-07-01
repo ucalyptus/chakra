@@ -17,7 +17,7 @@ describe('Integration: OpenRouter with minimax-m3', () => {
 
     const program = new GraphBuilder('openrouter-test')
       .defaults({ model: 'minimax/minimax-01', maxIterations: 2, temperature: 0.7 })
-      .channel('working_ledger', { mode: 'replace' })
+      .store('working_ledger', { mode: 'replace' })
       .roundStart('rs1')
       .actor('thinker', {
         type: 'llm',
@@ -70,8 +70,8 @@ describe('Integration: OpenRouter with minimax-m3', () => {
 
     const program = new GraphBuilder('deep-reasoner-mini')
       .defaults({ model: 'minimax/minimax-01', maxIterations: 1 })
-      .channel('private_notes', { mode: 'append' })
-      .channel('working_ledger', { mode: 'replace', initialValue: 'Topic: Design patterns for LLM applications' })
+      .store('private_notes', { mode: 'append' })
+      .store('working_ledger', { mode: 'replace', initialValue: 'Topic: Design patterns for LLM applications' })
       .roundStart('rs1')
       .actor('orchestrator', {
         type: 'llm',

@@ -60,17 +60,19 @@ export class Runner {
     this.eventBus = new EventBus();
     this.trace = new TraceLog();
 
-    // Initialize memory from compiled program channels
-    const channelConfigs = Array.from(program.stores.values()).map(ch => ({
-      id: ch.id,
-      name: ch.name,
-      write_mode: ch.writeMode,
-      max_entries: ch.maxEntries,
-      max_tokens: ch.maxTokens,
-      initial_value: ch.initialValue,
-      builtin: ch.builtin,
+    // Initialize memory from compiled program stores
+    const storeConfigs = Array.from(program.stores.values()).map(store => ({
+      id: store.id,
+      name: store.name,
+      write_mode: store.writeMode,
+      max_entries: store.maxEntries,
+      max_tokens: store.maxTokens,
+      initial_value: store.initialValue,
+      builtin: store.builtin,
+      format: store.format,
+      schema: store.schema,
     }));
-    this.memory = new StoreManager(channelConfigs);
+    this.memory = new StoreManager(storeConfigs);
     for (const [storeId, value] of Object.entries(config.initialMemory ?? {})) {
       if (this.memory.getStore(storeId)) {
         this.memory.write(storeId, value);
@@ -193,13 +195,14 @@ export class Runner {
     const model = actor.model ?? this.program.defaults.model ?? 'minimax/minimax-m1-m3';
     const temperature = actor.temperature ?? this.program.defaults.temperature;
 
-    // Permissive regex for template injection — allows {{ channel : storeId }} 
-    // whitespace variants that the permissive validator accepts.
-    const CHANNEL_RX = /\{\{\s*channel\s*:\s*(\w+)(?::(\d+))?\s*\}\}/g;
+    // Permissive regex for template injection — allows {{ channel : storeId }}
+    // whitespace variants that the permissive validator accepts. The `channel`
+    // keyword is the DSL template syntax itself and isn't renamed.
+    const STORE_TEMPLATE_RX = /\{\{\s*channel\s*:\s*(\w+)(?::(\d+))?\s*\}\}/g;
     let prompt = actor.prompt_template;
     for (const storeId of actor.subscribe) {
       const content = this.memory.read(storeId);
-      prompt = prompt.replace(CHANNEL_RX, (match, id) => id === storeId ? content : match);
+      prompt = prompt.replace(STORE_TEMPLATE_RX, (match, id) => id === storeId ? content : match);
     }
 
     // Add input context if present
@@ -262,7 +265,7 @@ export class Runner {
           timestamp: Date.now(),
         });
 
-        // Publish to channel if configured
+        // Publish to store if configured
         if (actor.publish !== undefined && actor.publish !== '') {
           this.memory.write(actor.publish, response.content);
           this.emitEvent({
@@ -576,7 +579,7 @@ export class Runner {
       }
 
       case 'store_write': {
-        const storeId = getConfigString(effect.config, 'channel');
+        const storeId = getConfigString(effect.config, 'store');
         const data = stringifyUnknown(getConfigValue(effect.config, 'data') ?? input ?? '');
         if (storeId !== undefined && storeId !== '') {
           this.memory.write(storeId, data);

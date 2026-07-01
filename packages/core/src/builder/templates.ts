@@ -9,8 +9,8 @@ import { GraphBuilder } from './graph-builder.js';
 export function deepReasonerTemplate(opts?: { model?: string }): Graph {
   return new GraphBuilder('deep-reasoner')
     .defaults({ model: opts?.model ?? 'claude-sonnet-4-6', temperature: 0.7 })
-    .channel('private_notes', { mode: 'append' })
-    .channel('working_ledger', { mode: 'replace' })
+    .store('private_notes', { mode: 'append' })
+    .store('working_ledger', { mode: 'replace' })
     .roundStart('rs1')
     .actor('orchestrator', {
       type: 'llm',
@@ -78,8 +78,8 @@ Working ledger: {{channel:working_ledger}}`,
 export function researchTemplate(opts?: { model?: string; topic?: string }): Graph {
   return new GraphBuilder('researcher')
     .defaults({ model: opts?.model, temperature: 0.8 })
-    .channel('hypotheses', { mode: 'append' })
-    .channel('findings', { mode: 'append' })
+    .store('hypotheses', { mode: 'append' })
+    .store('findings', { mode: 'append' })
     .roundStart('rs')
     .actor('hypothesis_gen', {
       type: 'llm',

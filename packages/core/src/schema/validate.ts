@@ -11,7 +11,10 @@ export interface ValidationError {
 type NodeMap = Map<string, Node>;
 type AdjacencyMap = Map<string, string[]>;
 
-const CHANNEL_TEMPLATE_PATTERN = /\{\{\s*channel\s*:\s*(\w+)(?::(\d+))?\s*\}\}/g;
+// The `channel` keyword here is the DSL template syntax itself ({{channel:storeId}})
+// and is not renamed by the store/channel naming cleanup — only the internal
+// identifiers around it are. Must match prompt-compiler.ts's pattern character-for-character.
+const STORE_TEMPLATE_PATTERN = /\{\{\s*channel\s*:\s*(\w+)(?::(\d+))?\s*\}\}/g;
 const FALLBACK_LABELS = new Set(['fallback', 'default', 'else']);
 
 export function validateGraph(program: Graph): ValidationError[] {
@@ -20,7 +23,7 @@ export function validateGraph(program: Graph): ValidationError[] {
   }
   const errors: ValidationError[] = [];
   const nodeMap = new Map(program.nodes.map((node) => [node.id, node]));
-  const storeIds = new Set(program.stores.map((channel) => channel.id));
+  const storeIds = new Set(program.stores.map((store) => store.id));
   const allEdges = program.edges.filter((edge) => edge.type === 'control' || edge.type === 'data');
   const adjacency = buildAdjacency(allEdges);
   const reverseAdjacency = buildReverseAdjacency(allEdges);
@@ -115,8 +118,8 @@ function validateStores(nodes: Node[], storeIds: Set<string>, errors: Validation
 
       errors.push({
         severity: 'error',
-        rule: 'CHANNEL_EXISTS',
-        message: `Actor "${node.id}" subscribes to undeclared channel "${storeId}".`,
+        rule: 'STORE_EXISTS',
+        message: `Actor "${node.id}" subscribes to undeclared store "${storeId}".`,
         nodeId: node.id,
       });
     }
@@ -124,8 +127,8 @@ function validateStores(nodes: Node[], storeIds: Set<string>, errors: Validation
     if (node.publish !== undefined && node.publish !== '' && !storeIds.has(node.publish)) {
       errors.push({
         severity: 'error',
-        rule: 'CHANNEL_EXISTS',
-        message: `Actor "${node.id}" publishes to undeclared channel "${node.publish}".`,
+        rule: 'STORE_EXISTS',
+        message: `Actor "${node.id}" publishes to undeclared store "${node.publish}".`,
         nodeId: node.id,
       });
     }
@@ -172,7 +175,7 @@ function validateTemplates(nodes: Node[], storeIds: Set<string>, errors: Validat
       continue;
     }
 
-    for (const storeId of extractTemplateChannels(node.prompt_template)) {
+    for (const storeId of extractTemplateStoreIds(node.prompt_template)) {
       if (storeIds.has(storeId)) {
         continue;
       }
@@ -180,7 +183,7 @@ function validateTemplates(nodes: Node[], storeIds: Set<string>, errors: Validat
       errors.push({
         severity: 'error',
         rule: 'TEMPLATE_VALID',
-        message: `Actor "${node.id}" references undeclared channel "${storeId}" in its prompt template.`,
+        message: `Actor "${node.id}" references undeclared store "${storeId}" in its prompt template.`,
         nodeId: node.id,
       });
     }
@@ -398,10 +401,10 @@ function traverse(startIds: string[], adjacency: AdjacencyMap): Set<string> {
   return visited;
 }
 
-function extractTemplateChannels(template: string): string[] {
+function extractTemplateStoreIds(template: string): string[] {
   const storeIds: string[] = [];
 
-  for (const match of template.matchAll(CHANNEL_TEMPLATE_PATTERN)) {
+  for (const match of template.matchAll(STORE_TEMPLATE_PATTERN)) {
     const storeId = match[1].trim();
     if (storeId !== '') {
       storeIds.push(storeId);

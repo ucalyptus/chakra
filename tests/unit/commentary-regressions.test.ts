@@ -30,7 +30,7 @@ describe('commentary regressions', () => {
   it('seeds configured initialMemory into subscribed stores', async () => {
     const program = new GraphBuilder('seeded-memory')
       .defaults({ model: 'mock', maxIterations: 1 })
-      .channel('notes', { mode: 'append' })
+      .store('notes', { mode: 'append' })
       .roundStart('rs')
       .actor('reader', {
         type: 'llm',
@@ -54,9 +54,9 @@ describe('commentary regressions', () => {
   it('emits store.write events for store_write effects', async () => {
     const program = new GraphBuilder('store-write-events')
       .defaults({ model: 'mock', maxIterations: 1 })
-      .channel('notes', { mode: 'append' })
+      .store('notes', { mode: 'append' })
       .roundStart('rs')
-      .effect('write', { effectType: 'store_write', config: { channel: 'notes', data: 'hello' } })
+      .effect('write', { effectType: 'store_write', config: { store: 'notes', data: 'hello' } })
       .roundEnd('re', { maxIterations: 1 })
       .build();
 
@@ -97,7 +97,7 @@ describe('commentary regressions', () => {
     expect(outputs).toEqual(['fallback output']);
   });
 
-  it('quotes serialized channel and router targets and rewrites gate-to-gate edges', () => {
+  it('quotes serialized store and router targets and rewrites gate-to-gate edges', () => {
     const nodes: Array<Node<ChakraNodeData>> = [
       {
         id: 'gate-1',
@@ -362,9 +362,9 @@ describe('commentary regressions', () => {
   it('actor_type "agent" loops on tool calls until the model stops requesting them', async () => {
     const program = new GraphBuilder('agent-loop')
       .defaults({ model: 'mock', maxIterations: 1 })
-      .channel('scratch', { mode: 'append' })
+      .store('scratch', { mode: 'append' })
       .roundStart('rs')
-      .effect('lookup', { effectType: 'store_write', config: { channel: 'scratch' }, after: '' })
+      .effect('lookup', { effectType: 'store_write', config: { store: 'scratch' }, after: '' })
       .actor('main', { type: 'agent', prompt: 'Go', tools: ['lookup'], after: 'rs' })
       .roundEnd('re', { after: 'main', maxIterations: 1 })
       .build();
@@ -406,9 +406,9 @@ describe('commentary regressions', () => {
   it('actor_type "llm" still executes a requested tool call but does not loop back to the model', async () => {
     const program = new GraphBuilder('llm-single-shot-tool')
       .defaults({ model: 'mock', maxIterations: 1 })
-      .channel('scratch', { mode: 'append' })
+      .store('scratch', { mode: 'append' })
       .roundStart('rs')
-      .effect('lookup', { effectType: 'store_write', config: { channel: 'scratch' }, after: '' })
+      .effect('lookup', { effectType: 'store_write', config: { store: 'scratch' }, after: '' })
       .actor('main', { type: 'llm', prompt: 'Go', tools: ['lookup'], after: 'rs' })
       .roundEnd('re', { after: 'main', maxIterations: 1 })
       .build();
