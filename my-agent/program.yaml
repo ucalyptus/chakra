@@ -1,0 +1,109 @@
+program:
+  name: "self-directed-reasoner"
+  version: "2.0"
+  defaults:
+    model: "minimax/minimax-m3"
+    temperature: 0.65
+    max_iterations: 8
+
+  stores:
+    - id: transcript
+      name: "Conversation Transcript"
+      write_mode: append
+      builtin: true
+
+    - id: working_notes
+      name: "Working Notes"
+      write_mode: append
+
+  nodes:
+    - type: loop_start
+      id: rs1
+
+    - type: tool
+      id: wait_input
+      name: "Wait for User Input"
+      tool_type: wait_for_user
+      config: {}
+
+    - type: actor
+      id: orchestrator
+      name: "Orchestrator"
+      actor_type: llm
+      subscribe: [transcript, working_notes]
+      publish: working_notes
+      prompt_template: |
+        You are a deliberate reasoning agent. Your job is to think carefully before answering.
+
+        The user's question (from transcript):
+        {{channel:transcript}}
+
+        Your reasoning so far (accumulates across rounds):
+        {{channel:working_notes}}
+
+        Think step by step. Build on previous reasoning if it exists. When you have reasoned enough
+        to give a confident, complete answer — end your response with <decision>emit</decision>.
+        When you need another reasoning pass — end with <decision>reason</decision>.
+
+    - type: router
+      id: branch
+      name: "Continue or Emit?"
+      mode: llm_driven
+      branches:
+        - label: reason
+          target: re_think
+        - label: emit
+          target: synthesizer
+        - label: fallback
+          target: synthesizer
+
+    - type: loop_end
+      id: re_think
+      max_iterations: 6
+
+    - type: actor
+      id: synthesizer
+      name: "Synthesizer"
+      actor_type: llm
+      subscribe: [transcript, working_notes]
+      prompt_template: |
+        Based on this reasoning:
+        {{channel:working_notes}}
+
+        Write a clear, direct answer to the user's question:
+        {{channel:transcript}}
+
+        Be concise. No meta-commentary about your reasoning process.
+
+    - type: tool
+      id: emit_response
+      name: "Emit Response"
+      tool_type: emit_to_user
+      config: {}
+
+    - type: loop_end
+      id: re_done
+      max_iterations: 1
+
+  edges:
+    - from: rs1
+      to: wait_input
+      type: control
+    - from: wait_input
+      to: orchestrator
+      type: control
+    - from: orchestrator
+      to: branch
+      type: data
+    - from: branch
+      to: re_think
+      type: control
+    - from: branch
+      to: synthesizer
+      type: control
+    - from: synthesizer
+      to: emit_response
+      type: data
+    - from: emit_response
+      to: re_done
+      type: control

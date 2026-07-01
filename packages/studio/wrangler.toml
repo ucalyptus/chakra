@@ -1,0 +1,6 @@
+name = "chakra-studio"
+pages_build_output_dir = "dist"
+
+[vars]
+# Add runtime-injected env vars here as needed.
+# VITE_API_URL = "https://agent.chakra.ucalyptus.me"

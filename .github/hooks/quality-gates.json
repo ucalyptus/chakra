@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "#!/bin/bash\nINPUT=$(cat)\nTOOL_NAME=$(echo \"$INPUT\" | jq -r '.toolName // empty')\nTOOL_ARGS=$(echo \"$INPUT\" | jq -r '.toolArgs // empty')\n\n# Only gate on git commit/push operations\nif [ \"$TOOL_NAME\" != \"bash\" ]; then\n  exit 0\nfi\n\n# Check if the command is a git commit or git push\nCMD=$(echo \"$TOOL_ARGS\" | jq -r '.command // empty')\nif echo \"$CMD\" | grep -qE '^git\\s+(commit|push)'; then\n  echo 'Running lint and tests before git operation...' >&2\n\n  # Run lint\n  cd \"$(echo \"$INPUT\" | jq -r '.cwd // \".\"')\" 2>/dev/null || cd .\n  LINT_OUTPUT=$(npm run lint 2>&1)\n  LINT_EXIT=$?\n  if [ $LINT_EXIT -ne 0 ]; then\n    echo '{\"decision\": \"block\", \"reason\": \"ESLint failed. Fix lint errors before committing.\", \"message\": \"'\"$(echo \"$LINT_OUTPUT\" | tail -5 | tr '\\n' ' ' | sed 's/\"/\\\\\"/g')\"'\"}'\n    exit 0\n  fi\n\n  # Run unit tests\n  TEST_OUTPUT=$(npx vitest run tests/unit 2>&1)\n  TEST_EXIT=$?\n  if [ $TEST_EXIT -ne 0 ]; then\n    echo '{\"decision\": \"block\", \"reason\": \"Unit tests failed. Fix tests before committing.\", \"message\": \"'\"$(echo \"$TEST_OUTPUT\" | tail -5 | tr '\\n' ' ' | sed 's/\"/\\\\\"/g')\"'\"}'\n    exit 0\n  fi\n\n  echo 'Lint and tests passed.' >&2\nfi\n\nexit 0",
+        "powershell": "$input = $Input | ConvertFrom-Json\n$toolName = $input.toolName\n$toolArgs = $input.toolArgs | ConvertFrom-Json -ErrorAction SilentlyContinue\n\nif ($toolName -ne 'bash') { exit 0 }\n\n$cmd = $toolArgs.command\nif ($cmd -notmatch '^git\\s+(commit|push)') { exit 0 }\n\nWrite-Host 'Running lint and tests before git operation...' -ForegroundColor Yellow\n\n$lintResult = npm run lint 2>&1\nif ($LASTEXITCODE -ne 0) {\n  @{ decision = 'block'; reason = 'ESLint failed. Fix lint errors before committing.' } | ConvertTo-Json -Compress\n  exit 0\n}\n\n$testResult = npx vitest run tests/unit 2>&1\nif ($LASTEXITCODE -ne 0) {\n  @{ decision = 'block'; reason = 'Unit tests failed. Fix tests before committing.' } | ConvertTo-Json -Compress\n  exit 0\n}\n\nWrite-Host 'Lint and tests passed.' -ForegroundColor Green\nexit 0",
+        "cwd": ".",
+        "timeoutSec": 120
+      }
+    ]
+  }
+}

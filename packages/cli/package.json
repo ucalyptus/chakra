@@ -1,0 +1,16 @@
+{
+  "name": "@chakra-dsl/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "chakra": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@chakra-dsl/core": "*",
+    "@chakra-dsl/providers": "*",
+    "@chakra-dsl/node": "*"
+  }
+}

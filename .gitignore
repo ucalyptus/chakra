@@ -1,0 +1,26 @@
+node_modules/
+dist/
+*.js
+!*.config.js
+*.d.ts
+*.map
+!vitest.config.ts
+!packages/*/src/**/*.ts
+!tests/**/*.ts
+.env
+.env.*
+.DS_Store
+*.log
+coverage/
+.vscode/
+.idea/
+
+# deepsec
+data/
+deepsec.config.ts
+.claude
+
+.firecrawl/
+*.tsbuildinfo
+/wrangler.toml
+!packages/*/wrangler.toml
