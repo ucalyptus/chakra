@@ -14,6 +14,9 @@ import type { ChakraNodeData, ChakraNodeType, ChakraConfig, RunResult } from './
 const WORKER_URL = 'https://chakra-agent.sdas-codes.workers.dev';
 const AUTH_KEY = 'chakra_studio_auth';
 
+// Goal and Gate are STUDIO-ONLY abstractions.
+// See types.ts (GoalConfig) and serializer.ts (graphToYAML) for
+// expansion semantics documentation.
 const NODE_DEFAULTS: Record<ChakraNodeType, ChakraConfig> = {
   loop_start: {},
   loop_end: { max_iterations: 1 },
