@@ -457,4 +457,101 @@ describe('commentary regressions', () => {
     expect(() => memory.write('notes', JSON.stringify({ other: 1 }))).toThrow(/missing required field/);
     expect(() => memory.write('notes', JSON.stringify({ status: 'ok' }))).not.toThrow();
   });
+
+  it('compiles a Goal to a store, not an actor, and wires connected actors to it', () => {
+    const nodes: Array<Node<ChakraNodeData>> = [
+      { id: 'rs', type: 'chakra', position: { x: 0, y: 0 }, data: { chakraType: 'loop_start', label: 'Start', config: {} } },
+      {
+        id: 'goal_1',
+        type: 'chakra',
+        position: { x: 100, y: 0 },
+        data: {
+          chakraType: 'goal',
+          label: 'Goal',
+          config: {
+            name: 'Goal',
+            statement: 'Ship the report',
+            definition_of_done: 'Report is complete',
+            verification_criteria: ['Has a summary'],
+          },
+        },
+      },
+      {
+        id: 'worker',
+        type: 'chakra',
+        position: { x: 200, y: 0 },
+        data: {
+          chakraType: 'actor',
+          label: 'Worker',
+          config: { name: 'Worker', model: 'mock', prompt_template: 'Do the work.', subscribe: ['transcript'], publish: 'notes', temperature: 0.5 },
+        },
+      },
+      { id: 're', type: 'chakra', position: { x: 300, y: 0 }, data: { chakraType: 'loop_end', label: 'End', config: { max_iterations: 1 } } },
+    ];
+    const edges: Edge[] = [
+      { id: 'e1', source: 'rs', target: 'worker' },
+      { id: 'e2', source: 'goal_1', target: 'worker' },
+      { id: 'e3', source: 'worker', target: 're' },
+    ];
+
+    const yaml = graphToYAML(nodes, edges);
+
+    // Goal is a store seeded with its own text, not an actor node.
+    expect(yaml).toMatch(/id: "goal_1"[\s\S]*?write_mode: replace[\s\S]*?initial_value: ".*Ship the report/);
+    expect(yaml).not.toMatch(/id: goal_1\s*\n\s*name:.*\n\s*actor_type: llm/);
+
+    // The actor it connects to picks up the store automatically.
+    expect(yaml).toMatch(/subscribe: \["transcript", "goal_1"\]/);
+    expect(yaml).toMatch(/Goal context:\n\s*\{\{channel:goal_1\}\}/);
+
+    // No control-flow edge is emitted for the goal connection.
+    expect(yaml).not.toMatch(/from: goal_1/);
+  });
+
+  it('a Goal never executes and its context reaches the actor prompt every round unchanged', async () => {
+    const nodes: Array<Node<ChakraNodeData>> = [
+      { id: 'rs', type: 'chakra', position: { x: 0, y: 0 }, data: { chakraType: 'loop_start', label: 'Start', config: {} } },
+      {
+        id: 'goal_1',
+        type: 'chakra',
+        position: { x: 100, y: 0 },
+        data: {
+          chakraType: 'goal',
+          label: 'Goal',
+          config: { name: 'Goal', statement: 'Ship the report', definition_of_done: 'Report is complete', verification_criteria: [] },
+        },
+      },
+      {
+        id: 'worker',
+        type: 'chakra',
+        position: { x: 200, y: 0 },
+        data: {
+          chakraType: 'actor',
+          label: 'Worker',
+          config: { name: 'Worker', model: 'mock', prompt_template: 'Do the work.', subscribe: [], publish: 'notes', temperature: 0.5 },
+        },
+      },
+      { id: 're', type: 'chakra', position: { x: 300, y: 0 }, data: { chakraType: 'loop_end', label: 'End', config: { max_iterations: 2 } } },
+    ];
+    const edges: Edge[] = [
+      { id: 'e1', source: 'rs', target: 'worker' },
+      { id: 'e2', source: 'goal_1', target: 'worker' },
+      { id: 'e3', source: 'worker', target: 're' },
+    ];
+
+    const provider = new MockProvider([{ content: 'ok round 1' }, { content: 'ok round 2' }]);
+    const { program: compiled } = compile(graphToYAML(nodes, edges), 'yaml');
+    const result = await new Runner(compiled, {
+      provider,
+      io: { emit: async () => {}, waitForInput: async () => '' },
+    }).run();
+
+    expect(result.finalMemory.get('goal_1')).toContain('Ship the report');
+    expect(provider.getCalls()).toHaveLength(2);
+    for (const call of provider.getCalls()) {
+      expect(call.messages[0]?.content).toContain('Ship the report');
+    }
+    const events = assertTrace(result).getEvents();
+    expect(events.some(e => 'nodeId' in e && e.nodeId === 'goal_1')).toBe(false);
+  });
 });

@@ -19,11 +19,17 @@ import type {
  *
  * At export (serializer.ts), the Studio expands them into core primitives:
  *
- *   Goal (1 node) → Actor (1 node)
- *     └─ The prompt_template is synthesized from GoalConfig fields
- *        (statement, definition_of_done, verification_criteria) via
- *        buildGoalPrompt(). Those fields are preserved as YAML comments
- *        for round-trip fidelity.
+ *   Goal (1 node) → Store (1 store, seeded with the goal text as initial_value)
+ *     └─ A Goal is fixed framing for the round, not a step that runs every
+ *        round — compiling it to an Actor would give it its own LLM call
+ *        each iteration. A Store has no executor, so "never re-executes"
+ *        holds by construction, not by convention.
+ *     └─ Every actor a Goal connects to gets the store's id added to its
+ *        `subscribe` list and a `{{channel:<goalId>}}` reference prepended
+ *        to its prompt — the same mechanism any other store already uses,
+ *        so downstream actors need no new concept to consume it.
+ *     └─ Goal-sourced edges are not emitted as control-flow edges (a store
+ *        can't be a graph step); see collectGoalContext() / the edges loop.
  *
  *   Gate (1 node) → Actor (1 node, ${id}__judge) + Router (1 node, ${id}__router)
  *     └─ The judge actor runs the gate prompt and emits a <decision>pass</decision>
@@ -38,7 +44,7 @@ import type {
  * so that YAML files can be re-parsed back into their studio types.
  * Goal fields (statement, definition_of_done, verification_criteria)
  * are written as structured YAML comments immediately preceding the
- * expanded actor node.
+ * expanded store.
  */
 
 function yamlQuote(value: string): string {
@@ -112,6 +118,40 @@ function writePromptBlock(lines: string[], prompt: string): void {
   }
 }
 
+interface GoalContext {
+  subscribeIds: string[];
+  header: string;
+}
+
+/**
+ * Maps each node a Goal connects to onto the store id it should subscribe
+ * to and a `{{channel:<goalId>}}` header to prepend to its prompt. Keyed
+ * by the post-translation target id so a goal wired into a gate lands on
+ * the judge actor that actually gets serialized.
+ */
+function collectGoalContext(nodes: Node<ChakraNodeData>[], edges: Edge[]): Map<string, GoalContext> {
+  const contextByTarget = new Map<string, GoalContext>();
+
+  for (const node of nodes) {
+    if (node.data.chakraType !== 'goal') continue;
+    const goalId = node.id;
+    const header = `Goal context:\n{{channel:${goalId}}}\n\n`;
+
+    for (const targetId of getOutgoingTargets(goalId, nodes, edges)) {
+      const existing = contextByTarget.get(targetId) ?? { subscribeIds: [], header: '' };
+      existing.subscribeIds.push(goalId);
+      existing.header += header;
+      contextByTarget.set(targetId, existing);
+    }
+  }
+
+  return contextByTarget;
+}
+
+function mergeSubscribe(base: string[] | undefined, extra: string[]): string[] {
+  return Array.from(new Set([...(base ?? []), ...extra]));
+}
+
 export function graphToYAML(nodes: Node<ChakraNodeData>[], edges: Edge[]): string {
   const lines: string[] = ['program:'];
   lines.push('  name: "visual-program"');
@@ -124,6 +164,8 @@ export function graphToYAML(nodes: Node<ChakraNodeData>[], edges: Edge[]): strin
 
   const channels = new Set<string>();
   channels.add('transcript');
+  const goalStoreValues = new Map<string, string>();
+  const goalContext = collectGoalContext(nodes, edges);
 
   for (const node of nodes) {
     if (node.data.chakraType === 'actor') {
@@ -134,8 +176,8 @@ export function graphToYAML(nodes: Node<ChakraNodeData>[], edges: Edge[]): strin
 
     if (node.data.chakraType === 'goal') {
       const cfg = node.data.config as GoalConfig;
-      cfg.subscribe?.forEach(ch => channels.add(ch));
-      if (cfg.publish) channels.add(cfg.publish);
+      channels.add(node.id);
+      goalStoreValues.set(node.id, buildGoalPrompt(cfg));
     }
 
     if (node.data.chakraType === 'gate') {
@@ -149,8 +191,10 @@ export function graphToYAML(nodes: Node<ChakraNodeData>[], edges: Edge[]): strin
   for (const ch of Array.from(channels)) {
     lines.push(`    - id: ${yamlQuote(ch)}`);
     lines.push(`      name: ${yamlQuote(ch)}`);
-    lines.push('      write_mode: append');
+    const goalValue = goalStoreValues.get(ch);
+    lines.push(`      write_mode: ${goalValue !== undefined ? 'replace' : 'append'}`);
     if (ch === 'transcript') lines.push('      builtin: true');
+    if (goalValue !== undefined) lines.push(`      initial_value: ${yamlQuote(goalValue)}`);
   }
   lines.push('');
 
@@ -173,37 +217,30 @@ export function graphToYAML(nodes: Node<ChakraNodeData>[], edges: Edge[]): strin
       }
       case 'actor': {
         const cfg = d.config as ActorConfig;
+        const context = goalContext.get(id);
+        const subscribe = context ? mergeSubscribe(cfg.subscribe, context.subscribeIds) : cfg.subscribe;
+        const prompt = (context?.header ?? '') + (cfg.prompt_template ?? '');
         lines.push('    - type: actor');
         lines.push(`      id: ${id}`);
         lines.push(`      name: ${yamlQuote(cfg.name || id)}`);
         lines.push('      actor_type: llm');
         if (cfg.model) lines.push(`      model: ${yamlQuote(cfg.model)}`);
         if (cfg.temperature != null) lines.push(`      temperature: ${cfg.temperature}`);
-        if (cfg.subscribe?.length) lines.push(`      subscribe: ${yamlInlineSequence(cfg.subscribe)}`);
+        if (subscribe?.length) lines.push(`      subscribe: ${yamlInlineSequence(subscribe)}`);
         if (cfg.publish) lines.push(`      publish: ${yamlQuote(cfg.publish)}`);
-        if (cfg.prompt_template) {
-          writePromptBlock(lines, cfg.prompt_template);
+        if (prompt) {
+          writePromptBlock(lines, prompt);
         }
         break;
       }
       case 'goal': {
         const cfg = d.config as GoalConfig;
-        lines.push('    # _chakra_node_type: goal');
-        lines.push(`    # Goal fields — statement, definition_of_done, verification_criteria`);
+        lines.push('    # _chakra_node_type: goal (compiled to a store — see stores: above)');
         lines.push(`    #   statement: ${yamlQuote(cfg.statement)}`);
         lines.push(`    #   definition_of_done: ${yamlQuote(cfg.definition_of_done)}`);
         for (const criterion of cfg.verification_criteria) {
           lines.push(`    #   verification_criteria: ${yamlQuote(criterion)}`);
         }
-        lines.push('    - type: actor');
-        lines.push(`      id: ${id}`);
-        lines.push(`      name: ${yamlQuote(cfg.name || id)}`);
-        lines.push('      actor_type: llm');
-        if (cfg.model) lines.push(`      model: ${yamlQuote(cfg.model)}`);
-        if (cfg.temperature != null) lines.push(`      temperature: ${cfg.temperature}`);
-        if (cfg.subscribe?.length) lines.push(`      subscribe: ${yamlInlineSequence(cfg.subscribe)}`);
-        if (cfg.publish) lines.push(`      publish: ${yamlQuote(cfg.publish)}`);
-        writePromptBlock(lines, buildGoalPrompt(cfg));
         break;
       }
       case 'gate': {
@@ -213,6 +250,8 @@ export function graphToYAML(nodes: Node<ChakraNodeData>[], edges: Edge[]): strin
         const inferredTargets = getOutgoingTargets(id, nodes, edges);
         const passTarget = requireGateTarget(id, 'pass', cfg.pass_target || inferredTargets[0] || '');
         const reviseTarget = requireGateTarget(id, 'revise', cfg.revise_target || inferredTargets[1] || '');
+        const context = goalContext.get(judgeId);
+        const subscribe = context ? mergeSubscribe(cfg.subscribe, context.subscribeIds) : cfg.subscribe;
 
         lines.push('    # _chakra_node_type: gate');
         lines.push('    - type: actor');
@@ -221,9 +260,9 @@ export function graphToYAML(nodes: Node<ChakraNodeData>[], edges: Edge[]): strin
         lines.push('      actor_type: llm');
         if (cfg.model) lines.push(`      model: ${yamlQuote(cfg.model)}`);
         if (cfg.temperature != null) lines.push(`      temperature: ${cfg.temperature}`);
-        if (cfg.subscribe?.length) lines.push(`      subscribe: ${yamlInlineSequence(cfg.subscribe)}`);
+        if (subscribe?.length) lines.push(`      subscribe: ${yamlInlineSequence(subscribe)}`);
         if (cfg.publish) lines.push(`      publish: ${yamlQuote(cfg.publish)}`);
-        writePromptBlock(lines, buildGatePrompt(cfg));
+        writePromptBlock(lines, (context?.header ?? '') + buildGatePrompt(cfg));
 
         lines.push('    - type: router');
         lines.push(`      id: ${routerId}`);
@@ -268,7 +307,7 @@ export function graphToYAML(nodes: Node<ChakraNodeData>[], edges: Edge[]): strin
     const targetNode = nodes.find(node => node.id === edge.target);
     const edgeType = edge.data?.edgeType ?? 'control';
 
-    if (sourceNode?.data.chakraType === 'gate') {
+    if (sourceNode?.data.chakraType === 'gate' || sourceNode?.data.chakraType === 'goal') {
       continue;
     }
 

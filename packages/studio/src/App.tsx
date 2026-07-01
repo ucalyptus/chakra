@@ -28,10 +28,6 @@ const NODE_DEFAULTS: Record<ChakraNodeType, ChakraConfig> = {
     statement: 'Deliver the requested outcome.',
     definition_of_done: 'The user-requested artifact is complete, coherent, and ready for review.',
     verification_criteria: ['Output addresses the request directly', 'Output is self-consistent', 'Any required artifact is produced'],
-    subscribe: ['transcript'],
-    publish: 'working_notes',
-    model: 'minimax/minimax-m3',
-    temperature: 0.3,
   },
   gate: {
     name: 'Delivery Gate',
