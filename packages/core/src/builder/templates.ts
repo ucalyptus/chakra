@@ -127,3 +127,141 @@ Conversation: {{channel:transcript}}`,
     .roundEnd('re')
     .build();
 }
+
+// ---------------------------------------------------------------------------
+// Looper template — "Flavor 2" pattern
+//
+//   Goal (seeded store)
+//     -> Implementer actor(s) [parallel, actor_type: agent]
+//     -> Join (mode: all) to collect outputs
+//     -> Collator actor [synthesises one packet]
+//     -> Gate (judge + router with pass/revise branches)
+//          pass  -> emit_to_user -> loop_end
+//          revise -> loop_end   (round restarts)
+//   loop_end with configurable max_iterations
+// ---------------------------------------------------------------------------
+
+export interface LooperTemplateOpts {
+  /** The overarching goal statement */
+  goalStatement?: string;
+  /** Definition of done for the goal */
+  definitionOfDone?: string;
+  /** Verification criteria the gate uses to decide pass/revise */
+  verificationCriteria?: string[];
+  /** Model for implementer actors (agent type). Default: 'deepseek/deepseek-chat' */
+  implementerModel?: string;
+  /** Model for the collator actor. Default: 'openrouter/minimax-m3' */
+  collatorModel?: string;
+  /** Model for the gate (verifier judge). Default: same as collatorModel */
+  verifierModel?: string;
+  /** Max loop iterations (stop condition). Default: 3 */
+  maxIterations?: number;
+  /** Number of parallel implementer instances. Default: 2 */
+  implementerCount?: number;
+  /** Base name for the program. Default: 'looper' */
+  name?: string;
+}
+
+const DEFAULT_GOAL_STATEMENT = 'Solve the requested task completely and correctly.';
+const DEFAULT_DOD = 'The output satisfies all stated requirements with clear, verifiable evidence.';
+
+export function looperTemplate(opts?: LooperTemplateOpts): Graph {
+  const goalStatement = opts?.goalStatement ?? DEFAULT_GOAL_STATEMENT;
+  const definitionOfDone = opts?.definitionOfDone ?? DEFAULT_DOD;
+  const verificationCriteria = opts?.verificationCriteria ?? [
+    'All requested issues are closed or outcomes are satisfied.',
+    'The artifact works and contains no obvious errors or slop.',
+    'Lint, type check, and tests pass on the produced artifact.',
+  ];
+  const implementerModel = opts?.implementerModel ?? 'deepseek/deepseek-chat';
+  const collatorModel = opts?.collatorModel ?? 'openrouter/minimax-m3';
+  const verifierModel = opts?.verifierModel ?? collatorModel;
+  const maxIterations = opts?.maxIterations ?? 3;
+  const implementerCount = opts?.implementerCount ?? 2;
+  const name = opts?.name ?? 'looper';
+
+  const builder = new GraphBuilder(name)
+    .defaults({ model: implementerModel, maxIterations })
+    .goal('goal', {
+      statement: goalStatement,
+      definition_of_done: definitionOfDone,
+      verification_criteria: verificationCriteria,
+    })
+    .roundStart('rs');
+
+  // Parallel implementer agents — all start from loop_start
+  for (let i = 0; i < implementerCount; i++) {
+    builder.actor(`implementer_${i}`, {
+      type: 'agent',
+      subscribe: ['transcript'],
+      prompt: `You are implementer ${i + 1} in a looper team. Your goal is to produce working output that satisfies the delivery goal.
+
+Goal context: {{channel:goal}}
+
+Produce the best implementation or solution you can. Use your tools to write code, create files, or perform research as needed.`,
+      instances: 1,
+      model: implementerModel,
+      tools: [],
+      after: 'rs',
+    });
+    // Wire the goal's store into this actor's subscribe + prompt
+    builder.goalInjectTo('goal', `implementer_${i}`);
+  }
+
+  // Join — wait for all implementers to finish
+  builder.awaitAll('join', {
+    count: 'all',
+    after: `implementer_${implementerCount - 1}`,
+  });
+  // Wire remaining implementers to join
+  for (let i = 0; i < implementerCount; i++) {
+    if (i < implementerCount - 1) {
+      builder.edge(`implementer_${i}`, 'join');
+    }
+  }
+
+  // Collator — synthesises all implementer outputs into one coherent packet
+  builder.actor('collator', {
+    type: 'llm',
+    subscribe: ['goal'],
+    prompt: `You are a collator. Multiple parallel implementers have produced outputs.
+
+Goal context: {{channel:goal}}
+
+Synthesize their work into a single coherent output. Resolve any conflicts, merge the best parts, and produce one unified deliverable.`,
+    model: collatorModel,
+    after: 'join',
+  });
+
+  // Gate (verifier judge + router) — checks if the work is done
+  builder.gate('gate', {
+    name: 'Verifier Gate',
+    gate_kind: 'delivery',
+    statement: goalStatement,
+    definition_of_done: definitionOfDone,
+    verification_criteria: verificationCriteria,
+    publish: 'goal',
+    model: verifierModel,
+    temperature: 0.3,
+    subscribe: ['goal'],
+    // pass: emit result to user then end the round
+    pass_target: 'emit_result',
+    // revise: restart the round via loop_end (which triggers next iteration)
+    revise_target: 're',
+    after: 'collator',
+  });
+
+  // Emit result on pass — chains from gate__router (lastNodeId)
+  builder.effect('emit_result', {
+    effectType: 'emit_to_user',
+  });
+
+  // Router needs explicit graph edges to both branch targets so the
+  // graph validator can see these nodes as reachable from loop_start.
+  builder.edge('gate__router', 're');
+
+  // Round end with configurable max iterations
+  builder.roundEnd('re', { after: 'emit_result', maxIterations });
+
+  return builder.build();
+}
