@@ -45,6 +45,12 @@ Six node types compose every program:
 | **Store** | Persistent named data (append/replace, FIFO, token budgets) |
 | **Round Start / Round End** | Round control with halt conditions |
 
+Reference a store's content from a prompt with `{{channel:storeId}}` (optionally
+`{{channel:storeId:maxTokens}}` to cap injected size). The keyword stays
+`channel` for backward compatibility with every already-authored prompt
+template — it's unrelated to the `GraphBuilder.store()` / `Store` naming
+used everywhere else in the API.
+
 ## Architecture
 
 ```

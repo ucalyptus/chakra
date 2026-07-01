@@ -34,7 +34,7 @@ export function validateGraph(program: Graph): ValidationError[] {
   validateInstanceCounts(program.nodes, errors);
   validateStores(program.nodes, storeIds, errors);
   validateTemplates(program.nodes, storeIds, errors);
-  validateActorTools(program.nodes, toolIds, errors);
+  validateActorTools(program.nodes, toolIds, nodeMap, errors);
   validateStoreSchema(program.stores, errors);
   validateRouterFallbacks(program.nodes, errors);
   validateAwaitReachable(program.nodes, nodeMap, reverseAdjacency, errors);
@@ -135,23 +135,35 @@ function validateStores(nodes: Node[], storeIds: Set<string>, errors: Validation
   }
 }
 
-function validateActorTools(nodes: Node[], toolIds: Set<string>, errors: ValidationError[]): void {
+function validateActorTools(nodes: Node[], toolIds: Set<string>, nodeMap: NodeMap, errors: ValidationError[]): void {
   for (const node of nodes) {
     if (node.type !== 'actor' || node.tools === undefined) {
       continue;
     }
 
     for (const toolId of node.tools) {
-      if (toolIds.has(toolId)) {
+      if (!toolIds.has(toolId)) {
+        errors.push({
+          severity: 'error',
+          rule: 'TOOLS_EXIST',
+          message: `Actor "${node.id}" references undeclared tool "${toolId}".`,
+          nodeId: node.id,
+        });
         continue;
       }
 
-      errors.push({
-        severity: 'error',
-        rule: 'TOOLS_EXIST',
-        message: `Actor "${node.id}" references undeclared tool "${toolId}".`,
-        nodeId: node.id,
-      });
+      // actor_type: 'llm' doesn't loop after a tool call, so a wait_for_user
+      // tool would block on real user input and then discard the result —
+      // only actor_type: 'agent' can meaningfully act on it afterward.
+      const tool = nodeMap.get(toolId);
+      if (node.actor_type === 'llm' && tool?.type === 'tool' && tool.tool_type === 'wait_for_user') {
+        errors.push({
+          severity: 'error',
+          rule: 'LLM_TOOL_COMPATIBLE',
+          message: `Actor "${node.id}" is actor_type "llm" but references wait_for_user tool "${toolId}"; the result would be discarded. Use actor_type "agent" instead.`,
+          nodeId: node.id,
+        });
+      }
     }
   }
 }
@@ -217,7 +229,7 @@ function validateAwaitReachable(
   errors: ValidationError[],
 ): void {
   for (const node of nodes) {
-    if (node.type !== 'join' || node.await_count === 'all') {
+    if (node.type !== 'join') {
       continue;
     }
 
@@ -226,6 +238,23 @@ function validateAwaitReachable(
       const actor = nodeMap.get(actorId);
       return actor?.type === 'actor' ? sum + (actor.instances ?? 1) : sum;
     }, 0);
+
+    if (node.await_count === 'all') {
+      // mode: 'all' waits for every reachable actor instance at runtime — with
+      // zero reachable, the join can never be satisfied by an actual actor
+      // and will only ever fire on a stray non-actor arrival, if at all.
+      if (reachableCount > 0) {
+        continue;
+      }
+
+      errors.push({
+        severity: 'error',
+        rule: 'AWAIT_REACHABLE',
+        message: `Await node "${node.id}" has await_count "all" but no upstream actor instances are reachable.`,
+        nodeId: node.id,
+      });
+      continue;
+    }
 
     if (node.await_count <= reachableCount) {
       continue;

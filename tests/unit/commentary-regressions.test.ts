@@ -603,4 +603,59 @@ describe('commentary regressions', () => {
     const events = assertTrace(result).getEvents();
     expect(events.some(e => 'nodeId' in e && e.nodeId === 'goal_1')).toBe(false);
   });
+
+  it('emits an error event when the agent tool-call loop hits its iteration cap mid tool_calls', async () => {
+    const program = new GraphBuilder('agent-loop-cap')
+      .defaults({ model: 'mock', maxIterations: 1 })
+      .store('scratch', { mode: 'append' })
+      .roundStart('rs')
+      .effect('lookup', { effectType: 'store_write', config: { store: 'scratch' }, after: '' })
+      .actor('main', { type: 'agent', prompt: 'Go', tools: ['lookup'], after: 'rs' })
+      .roundEnd('re', { after: 'main', maxIterations: 1 })
+      .build();
+
+    const provider: LLMProvider = {
+      complete: async (request) => ({
+        content: 'still going',
+        model: request.model,
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        finishReason: 'tool_calls',
+        toolCalls: [{ id: 't1', name: 'lookup', arguments: JSON.stringify({ data: 'x' }) }],
+      }),
+    };
+
+    const { program: compiled } = compile(program);
+    const result = await new Runner(compiled, {
+      provider,
+      io: { emit: async () => {}, waitForInput: async () => '' },
+    }).run();
+
+    assertTrace(result).hasEvent('error', { nodeId: 'main' });
+    const errorEvent = assertTrace(result).getEvents().find(e => e.type === 'error' && e.nodeId === 'main');
+    expect(errorEvent?.type === 'error' && errorEvent.error).toMatch(/tool-call limit/);
+  });
+
+  it('rejects an actor_type "llm" actor referencing a wait_for_user tool', () => {
+    const program = new GraphBuilder('llm-wait-for-user')
+      .defaults({ model: 'mock', maxIterations: 1 })
+      .roundStart('rs')
+      .effect('waiter', { effectType: 'wait_for_user', after: '' })
+      .actor('main', { type: 'llm', prompt: 'Go', tools: ['waiter'], after: 'rs' })
+      .roundEnd('re', { after: 'main', maxIterations: 1 })
+      .build();
+
+    expect(() => compile(program)).toThrow(/LLM_TOOL_COMPATIBLE/);
+  });
+
+  it('rejects an await_count "all" join with no reachable upstream actors', () => {
+    const program = new GraphBuilder('join-all-unreachable')
+      .defaults({ model: 'mock', maxIterations: 1 })
+      .roundStart('rs')
+      .effect('log1', { effectType: 'log', after: 'rs' })
+      .awaitAll('j', { count: 'all', after: 'log1' })
+      .roundEnd('re', { after: 'j', maxIterations: 1 })
+      .build();
+
+    expect(() => compile(program)).toThrow(/AWAIT_REACHABLE/);
+  });
 });

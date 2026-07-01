@@ -245,6 +245,15 @@ export class Runner {
             totalUsage.outputTokens += response.usage.outputTokens;
             totalUsage.totalTokens += response.usage.totalTokens;
           }
+
+          if (response.finishReason === 'tool_calls' && iterations >= MAX_AGENT_TOOL_ITERATIONS) {
+            this.emitEvent({
+              type: 'error',
+              nodeId: actor.id,
+              error: `Actor "${actor.id}" hit the ${MAX_AGENT_TOOL_ITERATIONS}-iteration tool-call limit while the model still requested tool_calls; returning its last response as final output instead of continuing.`,
+              timestamp: Date.now(),
+            });
+          }
         } else if (response.finishReason === 'tool_calls') {
           for (const call of response.toolCalls ?? []) {
             await this.runToolCall(call, toolsByName);
